@@ -1,3 +1,4 @@
+import logging
 import time
 
 from fastapi import FastAPI
@@ -18,10 +19,16 @@ app.include_router(scans.router)
 @app.on_event("startup")
 def startup():
     get_settings().validate_api_settings()  # fail fast on missing / placeholder secrets
+    log = logging.getLogger("uvicorn.error")
     for attempt in range(30):
         try:
             init_db()
             return
-        except OperationalError:
+        except OperationalError as e:
+            reason = str(e.orig).strip().splitlines()[0] if e.orig else str(e)
+            log.warning("Database not ready (attempt %s/30): %s", attempt + 1, reason)
+            if "password authentication failed" in reason:
+                log.error("POSTGRES_PASSWORD in .env does not match the existing database volume. "
+                          "If you have no data to keep, run: docker compose down -v && docker compose up -d")
             time.sleep(2)
     init_db()

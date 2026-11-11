@@ -59,7 +59,8 @@ def main() -> None:
         try:
             init_db()
             break
-        except OperationalError:
+        except OperationalError as e:
+            log.warning("Database not ready: %s", str(e.orig or e).strip().splitlines()[0])
             time.sleep(2)
     recover()
     log.info("worker ready")
