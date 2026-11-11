@@ -4,6 +4,7 @@ import Layout from './components/Layout.jsx'
 import Login from './pages/Login.jsx'
 import Projects from './pages/Projects.jsx'
 import NewScan from './pages/NewScan.jsx'
+import ScanProgress from './pages/ScanProgress.jsx'
 
 function Protected({ children }) {
   return getToken() ? children : <Navigate to="/login" replace />
@@ -17,6 +18,7 @@ export default function App() {
         <Route path="/" element={<Navigate to="/projects" replace />} />
         <Route path="/projects" element={<Projects />} />
         <Route path="/scans/new" element={<NewScan />} />
+        <Route path="/scans/:id" element={<ScanProgress />} />
       </Route>
       <Route path="*" element={<Navigate to="/projects" replace />} />
     </Routes>

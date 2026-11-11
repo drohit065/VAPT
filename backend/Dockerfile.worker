@@ -1,0 +1,33 @@
+# Scanner binaries are copied from their official, version-pinned images (multi-arch: amd64 + arm64).
+FROM aquasec/trivy:0.58.1 AS trivy
+FROM zricethezav/gitleaks:v8.21.2 AS gitleaks
+
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# Semgrep lives in its own virtualenv so its pinned dependencies never clash with the app's.
+RUN python -m venv /opt/semgrep \
+ && /opt/semgrep/bin/pip install --no-cache-dir semgrep==1.181.1 \
+ && ln -s /opt/semgrep/bin/semgrep /usr/local/bin/semgrep
+
+COPY --from=trivy /usr/local/bin/trivy /usr/local/bin/trivy
+COPY --from=gitleaks /usr/bin/gitleaks /usr/local/bin/gitleaks
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app ./app
+RUN chmod 755 app/worker/askpass.sh
+
+# Scans run as an unprivileged user.
+RUN useradd --uid 10001 --create-home vapt \
+ && mkdir -p /work /cache/trivy /data/uploads \
+ && chown -R vapt /work /cache /data
+USER vapt
+
+CMD ["python", "-m", "app.worker"]

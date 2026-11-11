@@ -44,6 +44,33 @@ services:
       db:
         condition: service_healthy
 
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    restart: unless-stopped
+    # The worker gets only what it needs: no admin password or JWT secret.
+    environment:
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: db
+      MAX_EXTRACT_MB: ${MAX_EXTRACT_MB:-500}
+      MAX_EXTRACT_FILES: ${MAX_EXTRACT_FILES:-20000}
+      MAX_REPO_MB: ${MAX_REPO_MB:-1000}
+      SCAN_TIMEOUT_SECONDS: ${SCAN_TIMEOUT_SECONDS:-1800}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5-5}
+    volumes:
+      - uploads:/data/uploads
+      - scanner-cache:/cache
+    tmpfs:
+      - /tmp
+    depends_on:
+      db:
+        condition: service_healthy
+
   frontend:
     build: ./frontend
     restart: unless-stopped
@@ -55,3 +82,4 @@ services:
 volumes:
   pgdata:
   uploads:
+  scanner-cache:

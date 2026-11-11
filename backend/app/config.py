@@ -1,7 +1,6 @@
 """Settings. Every secret comes from the environment (.env via docker compose)."""
 from functools import lru_cache
 
-from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,8 +8,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore")
 
     admin_username: str = "admin"
-    admin_password: str = Field(min_length=12)
-    jwt_secret: str = Field(min_length=32)
+    # Required by the API (checked in validate_api_settings); the worker does not receive them.
+    admin_password: str = ""
+    jwt_secret: str = ""
     jwt_expire_minutes: int = 480
     token_encryption_key: str = ""
 
@@ -30,12 +30,14 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-5-5"
 
-    @field_validator("admin_password", "jwt_secret")
-    @classmethod
-    def not_placeholder(cls, v: str) -> str:
-        if v.startswith("change-me") or v.startswith("replace-with"):
-            raise ValueError("still set to the .env.example placeholder")
-        return v
+    def validate_api_settings(self) -> None:
+        problems = []
+        if len(self.admin_password) < 12 or self.admin_password.startswith("change-me"):
+            problems.append("ADMIN_PASSWORD must be set and at least 12 characters")
+        if len(self.jwt_secret) < 32 or self.jwt_secret.startswith("replace-with"):
+            problems.append("JWT_SECRET must be set and at least 32 characters")
+        if problems:
+            raise RuntimeError("Invalid .env: " + "; ".join(problems))
 
     @property
     def sqlalchemy_url(self) -> str:
