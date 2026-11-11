@@ -1,0 +1,147 @@
+:root {
+  --navy: #14213D;
+  --navy-2: #1d2d52;
+  --teal: #0B5F66;
+  --teal-dark: #08494f;
+  --bg: #F1F3F6;
+  --card: #FFFFFF;
+  --border: #DDE2EA;
+  --text: #1B2333;
+  --muted: #5B6578;
+  --crit: #7A1626;
+  --high: #C2410C;
+  --med: #F5C451;
+  --low: #DCE6F2;
+  --ok: #1F7A4D;
+  --radius: 8px;
+  --sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, monospace;
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.5;
+}
+a { color: var(--teal); }
+code, .mono { font-family: var(--mono); font-size: 13px; }
+h1 { font-size: 22px; margin: 0 0 4px; font-weight: 600; }
+h2 { font-size: 17px; margin: 0 0 12px; font-weight: 600; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+
+/* ---------- Layout ---------- */
+.app { display: flex; min-height: 100%; }
+.sidebar {
+  width: 232px;
+  flex-shrink: 0;
+  background: var(--navy);
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 14px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+}
+.brand { font-weight: 700; font-size: 18px; letter-spacing: .5px; padding: 0 10px 20px; }
+.brand span { color: #7fd0d6; font-weight: 400; }
+.nav a {
+  display: block;
+  color: #cfd6e4;
+  text-decoration: none;
+  padding: 9px 10px;
+  border-radius: 6px;
+  margin-bottom: 2px;
+}
+.nav a:hover { background: var(--navy-2); color: #fff; }
+.nav a.active { background: var(--teal); color: #fff; }
+.sidebar .spacer { flex: 1; }
+.sidebar .user { font-size: 13px; color: #aab4c8; padding: 0 10px 8px; }
+.linkbtn {
+  background: none; border: 0; color: #cfd6e4; cursor: pointer;
+  padding: 9px 10px; text-align: left; font: inherit; border-radius: 6px; width: 100%;
+}
+.linkbtn:hover { background: var(--navy-2); color: #fff; }
+.topbar { display: none; }
+.main { flex: 1; min-width: 0; padding: 28px 32px; }
+.page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+
+/* ---------- Components ---------- */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 16px;
+}
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  background: var(--teal); color: #fff; border: 0; border-radius: 6px;
+  padding: 9px 16px; font: inherit; font-weight: 500; cursor: pointer; text-decoration: none;
+}
+.btn:hover { background: var(--teal-dark); }
+.btn:disabled { opacity: .55; cursor: not-allowed; }
+.btn.secondary { background: #fff; color: var(--teal); border: 1px solid var(--teal); }
+.btn.secondary:hover { background: #eef6f6; }
+label { display: block; font-weight: 500; margin-bottom: 6px; font-size: 14px; }
+input[type=text], input[type=password], input[type=url], select {
+  width: 100%; padding: 9px 11px; border: 1px solid var(--border); border-radius: 6px;
+  font: inherit; background: #fff; color: var(--text);
+}
+input:focus, select:focus, .btn:focus-visible { outline: 2px solid var(--teal); outline-offset: 1px; }
+.field { margin-bottom: 16px; }
+.error { background: #fbeaec; color: var(--crit); border: 1px solid #f0c4ca; padding: 10px 12px; border-radius: 6px; margin-bottom: 14px; }
+.info { background: #eef6f6; color: var(--teal-dark); border: 1px solid #c5e1e3; padding: 10px 12px; border-radius: 6px; margin-bottom: 14px; }
+
+.sev {
+  display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap;
+}
+.sev-Critical { background: var(--crit); color: #fff; }
+.sev-High { background: var(--high); color: #fff; }
+.sev-Medium { background: var(--med); color: #3d2c00; }
+.sev-Low { background: var(--low); color: #22324a; }
+.sev-None { background: #e3f2ea; color: var(--ok); }
+
+table.list { width: 100%; border-collapse: collapse; }
+table.list th { text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); font-weight: 600; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+table.list td { padding: 12px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+table.list tr:last-child td { border-bottom: 0; }
+table.list tr.clickable { cursor: pointer; }
+table.list tr.clickable:hover td { background: #f7f9fb; }
+.counts { display: flex; gap: 4px; flex-wrap: wrap; }
+.count-chip { font-size: 12px; padding: 1px 7px; border-radius: 4px; font-weight: 600; }
+.empty { text-align: center; padding: 40px 20px; color: var(--muted); }
+.clean { color: var(--ok); font-weight: 600; }
+
+/* ---------- Login ---------- */
+.login-wrap { min-height: 100%; display: flex; align-items: center; justify-content: center; padding: 16px; background: var(--navy); }
+.login-card { width: 100%; max-width: 380px; }
+.login-card .brand { color: var(--navy); padding: 0 0 6px; }
+.login-card .brand span { color: var(--teal); }
+
+/* ---------- Phone width ---------- */
+@media (max-width: 760px) {
+  .app { flex-direction: column; }
+  .sidebar { display: none; }
+  .sidebar.open { display: flex; position: fixed; inset: 52px 0 0 0; height: auto; width: 100%; z-index: 20; }
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    background: var(--navy); color: #fff; padding: 0 16px; height: 52px; position: sticky; top: 0; z-index: 30;
+  }
+  .topbar .brand { padding: 0; font-size: 16px; }
+  .topbar button { background: none; border: 1px solid #3a4a6e; color: #fff; border-radius: 6px; padding: 6px 10px; font: inherit; }
+  .main { padding: 18px 16px; }
+  .card { padding: 16px; }
+  table.list.responsive thead { display: none; }
+  table.list.responsive tr { display: block; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  table.list.responsive td { display: flex; justify-content: space-between; gap: 12px; border: 0; padding: 4px 4px; }
+  table.list.responsive td::before { content: attr(data-label); color: var(--muted); font-size: 13px; }
+  table.list.responsive td.cell-main { display: block; padding-bottom: 6px; }
+  table.list.responsive td.cell-main::before { content: none; }
+}

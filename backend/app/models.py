@@ -1,0 +1,90 @@
+from datetime import datetime, timezone
+
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    ForeignKey,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+)
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from .db import Base
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class Project(Base):
+    __tablename__ = "projects"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+    source_type: Mapped[str] = mapped_column(String(10))  # "git" | "zip"
+    # Git URL without credentials, or the zip file name.
+    source: Mapped[str] = mapped_column(String(1000), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    scans: Mapped[list["Scan"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan", order_by="Scan.id.desc()"
+    )
+
+
+class Scan(Base):
+    __tablename__ = "scans"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    # queued | running | completed | failed
+    status: Mapped[str] = mapped_column(String(20), default="queued", index=True)
+    branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    checks: Mapped[dict] = mapped_column(JSON, default=dict)
+    steps: Mapped[list] = mapped_column(JSON, default=list)
+    languages: Mapped[list] = mapped_column(JSON, default=list)
+    frameworks: Mapped[list] = mapped_column(JSON, default=list)
+    counts: Mapped[dict] = mapped_column(JSON, default=dict)
+    notes: Mapped[list] = mapped_column(JSON, default=list)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Fernet-encrypted Git token. Wiped as soon as the scan finishes. Never returned by the API.
+    git_token_enc: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    # Path of the uploaded zip on the shared volume. Deleted when the scan finishes.
+    upload_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    project: Mapped[Project] = relationship(back_populates="scans")
+    findings: Mapped[list["Finding"]] = relationship(
+        back_populates="scan", cascade="all, delete-orphan"
+    )
+
+
+class Finding(Base):
+    __tablename__ = "findings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    scan_id: Mapped[int] = mapped_column(ForeignKey("scans.id", ondelete="CASCADE"), index=True)
+    severity: Mapped[str] = mapped_column(String(10), index=True)  # Critical | High | Medium | Low
+    title: Mapped[str] = mapped_column(String(500))
+    file_path: Mapped[str] = mapped_column(String(1000))
+    line: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    snippet: Mapped[str] = mapped_column(Text, default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    exploitation: Mapped[str] = mapped_column(Text, default="")
+    recommendation: Mapped[str] = mapped_column(Text, default="")
+    cwe: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    owasp: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    scanners: Mapped[list] = mapped_column(JSON, default=list)
+    rule_id: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    check: Mapped[str] = mapped_column(String(30))
+    ai_verdict: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    ai_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    scan: Mapped[Scan] = relationship(back_populates="findings")
