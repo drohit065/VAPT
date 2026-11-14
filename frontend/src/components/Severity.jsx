@@ -27,6 +27,29 @@ export function CountChips({ counts }) {
   )
 }
 
+export function SeverityBar({ counts }) {
+  const total = SEVERITIES.reduce((n, s) => n + (counts?.[s] || 0), 0)
+  if (!total) return <div className="sevbar-empty">No findings</div>
+  return (
+    <div>
+      <div className="sevbar" role="img"
+           aria-label={SEVERITIES.map(s => `${counts[s] || 0} ${s}`).join(', ')}>
+        {SEVERITIES.filter(s => counts[s]).map(s => (
+          <span key={s} title={`${s}: ${counts[s]}`}
+                style={{ flexGrow: counts[s], background: SEV_COLORS[s].bg, color: SEV_COLORS[s].fg }}>
+            {counts[s]}
+          </span>
+        ))}
+      </div>
+      <div className="sevbar-legend small">
+        {SEVERITIES.map(s => (
+          <span key={s}><i style={{ background: SEV_COLORS[s].bg }} />{s} {counts[s] || 0}</span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function fmtTime(iso) {
   if (!iso) return '—'
   return new Date(iso).toLocaleString()

@@ -5,7 +5,7 @@ import shutil
 import uuid
 import zipfile
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -196,3 +196,26 @@ def get_findings(scan_id: int, db: Session = Depends(get_db)):
     items = [finding_dict(f) for f in scan.findings]
     items.sort(key=sort_key)
     return items
+
+
+@router.get("/scans/{scan_id}/report.pdf")
+def get_report_pdf(scan_id: int, db: Session = Depends(get_db)):
+    scan = db.get(Scan, scan_id)
+    if not scan:
+        raise HTTPException(404, "Scan not found")
+    if scan.status != "completed":
+        raise HTTPException(409, "The report is available when the scan has completed.")
+    from ..normalize import sort_key
+    from ..pdf_report import build_pdf
+
+    items = sorted((finding_dict(f) for f in scan.findings), key=sort_key)
+    pdf = build_pdf(_scan_detail(scan), items)
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", scan.project.name)[:80] or "project"
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="vapt-report-{name}-scan{scan.id}.pdf"',
+            "Cache-Control": "no-store",
+        },
+    )
