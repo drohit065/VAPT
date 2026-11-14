@@ -159,6 +159,13 @@ def _finding_block(i: int, f: dict, width: float) -> list:
     head.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                               ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
     meta = [f"Location: {loc}"]
+    if f.get("cvss_score") is not None:
+        meta.append(f"CVSS {f['cvss_score']:.1f}" + (" (estimated)" if f.get("cvss_source") == "estimated"
+                                                     else f" {f.get('cvss_vector') or ''}".rstrip()))
+    if f.get("status") and f["status"] != "open":
+        meta.append("Status: " + f["status"].replace("_", " ").capitalize())
+    if f.get("is_new") is False:
+        meta.append("Seen in the previous scan")
     if f.get("cwe"):
         meta.append(f"CWE: {f['cwe']}")
     if f.get("owasp"):
@@ -171,6 +178,8 @@ def _finding_block(i: int, f: dict, width: float) -> list:
     block = [head, _p("  |  ".join(meta), "small")]
     if f.get("snippet"):
         block += [_p("Code", "label"), Preformatted(_wrap_snippet(f["snippet"]), S["mono"])]
+    if f.get("status_note"):
+        block += [_p("Status note", "label"), _p(f["status_note"])]
     for label, key in (("What is wrong", "description"), ("How it could be exploited", "exploitation"),
                        ("Recommended fix", "recommendation"), ("AI notes", "ai_notes")):
         if f.get(key):
@@ -183,6 +192,8 @@ def build_pdf(scan: dict, findings: list[dict]) -> bytes:
     counts/checks/notes/ai_summary. findings: finding dicts, already sorted by severity."""
     buf = io.BytesIO()
     project = scan["project"]
+    suppressed = [f for f in findings if f.get("status") in ("false_positive", "accepted_risk")]
+    findings = [f for f in findings if f.get("status") not in ("false_positive", "accepted_risk")]
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=16 * mm, rightMargin=16 * mm,
                             topMargin=16 * mm, bottomMargin=16 * mm,
                             title=f"Security report - {project['name']}", author="VAPT Scanner")
@@ -234,6 +245,16 @@ def build_pdf(scan: dict, findings: list[dict]) -> bytes:
                                 ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
     story += [legend]
 
+    diff = scan.get("diff") or {}
+    if diff.get("previous_scan_id"):
+        story += [Paragraph("Changes since the previous scan", S["h2"]),
+                  _p(f"Compared with scan #{diff['previous_scan_id']}: {diff.get('new', 0)} new finding(s), "
+                     f"{diff.get('recurring', 0)} still present, {diff.get('fixed', 0)} no longer found.")]
+        for it in (diff.get("fixed_items") or [])[:15]:
+            story.append(_p(f"- Fixed: [{it['severity']}] {it['title']} ({it['file_path']})", "small"))
+    if suppressed:
+        story += [_p(f"{len(suppressed)} finding(s) marked as false positive or accepted risk are left out of "
+                     "this report's counts and details.", "small")]
     if scan.get("ai_summary"):
         story += [Paragraph("AI review summary", S["h2"]), _p(scan["ai_summary"])]
     if scan.get("notes"):

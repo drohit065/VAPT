@@ -45,3 +45,22 @@ def init_db():
             # Backend and worker start together: let only one create the tables at a time.
             conn.execute(text("SELECT pg_advisory_xact_lock(7316001)"))
         Base.metadata.create_all(conn)
+        if engine.dialect.name == "postgresql":
+            for stmt in MIGRATIONS:
+                conn.execute(text(stmt))
+
+
+# Columns added after the first release. create_all() only creates missing tables, so existing
+# databases get new columns here (idempotent).
+MIGRATIONS = [
+    "ALTER TABLE scans ADD COLUMN IF NOT EXISTS diff JSON",
+    "ALTER TABLE findings ADD COLUMN IF NOT EXISTS fingerprint VARCHAR(64)",
+    "CREATE INDEX IF NOT EXISTS ix_findings_fingerprint ON findings (fingerprint)",
+    "ALTER TABLE findings ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'open'",
+    "ALTER TABLE findings ADD COLUMN IF NOT EXISTS status_note TEXT",
+    "ALTER TABLE findings ADD COLUMN IF NOT EXISTS status_updated_at TIMESTAMPTZ",
+    "ALTER TABLE findings ADD COLUMN IF NOT EXISTS is_new BOOLEAN NOT NULL DEFAULT TRUE",
+    "ALTER TABLE findings ADD COLUMN IF NOT EXISTS cvss_score DOUBLE PRECISION",
+    "ALTER TABLE findings ADD COLUMN IF NOT EXISTS cvss_vector VARCHAR(200)",
+    "ALTER TABLE findings ADD COLUMN IF NOT EXISTS cvss_source VARCHAR(20)",
+]

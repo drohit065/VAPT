@@ -31,6 +31,9 @@ from ..normalize import (
     redact_findings,
     secret_values,
 )
+from sqlalchemy import select
+
+from ..findings_mgmt import apply_history, open_counts
 from ..security import decrypt_token, scrub
 from . import dast
 from . import detect as detect_mod
@@ -392,12 +395,22 @@ def run_scan(scan_id: int) -> None:
         redact_findings(all_findings, secrets)
         secrets = []
         final = dedupe(all_findings)
+        previous = db.scalars(
+            select(Scan).where(Scan.project_id == scan.project_id, Scan.status == "completed",
+                               Scan.id != scan.id).order_by(Scan.id.desc()).limit(1)
+        ).first()
+        diff = apply_history(final, previous.findings if previous else [])
+        diff["previous_scan_id"] = previous.id if previous else None
+        scan.diff = diff
         for f in final:
             db.add(Finding(scan_id=scan.id, **{k: v for k, v in f.items() if not k.startswith("_")}))
-        scan.counts = count_by_severity(final)
+        scan.counts = open_counts(final)
         scan.notes = notes
         removed = len(all_findings) - len(final)
-        steps.finish("report", detail=f"{len(final)} finding(s)" + (f", {removed} duplicate(s) merged" if removed else ""))
+        detail = f"{len(final)} finding(s)" + (f", {removed} duplicate(s) merged" if removed else "")
+        if previous:
+            detail += f"; vs scan #{previous.id}: {diff['new']} new, {diff['fixed']} fixed"
+        steps.finish("report", detail=detail)
         scan.status = "completed"
         scan.finished_at = datetime.now(timezone.utc)
         db.commit()

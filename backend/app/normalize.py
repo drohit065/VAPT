@@ -96,10 +96,25 @@ def _owasp_2021(value) -> str | None:
     return None
 
 
+ESTIMATED_CVSS = {"Critical": 9.1, "High": 7.5, "Medium": 5.3, "Low": 3.1}
+
+
+def _cvss_fields(severity, score, vector) -> dict:
+    try:
+        score = float(score) if score not in (None, "") else None
+    except (TypeError, ValueError):
+        score = None
+    if score is not None and 0 <= score <= 10:
+        return {"cvss_score": round(score, 1), "cvss_vector": _clip(vector, 200) or None, "cvss_source": "scanner"}
+    sev = severity if severity in SEVERITY_ORDER else "Low"
+    return {"cvss_score": ESTIMATED_CVSS[sev], "cvss_vector": None, "cvss_source": "estimated"}
+
+
 def make_finding(*, severity, title, file_path, line, snippet, description, check, scanner,
-                 rule_id=None, cwe=None, owasp=None, exploitation=None, recommendation=None) -> dict:
+                 rule_id=None, cwe=None, owasp=None, exploitation=None, recommendation=None,
+                 cvss_score=None, cvss_vector=None) -> dict:
     kb_owasp, kb_exploit, kb_fix = lookup(cwe, check)
-    return {
+    return _cvss_fields(severity, cvss_score, cvss_vector) | {
         "severity": severity if severity in SEVERITY_ORDER else "Low",
         "title": _clip(title, 500) or "Untitled finding",
         "file_path": file_path or "(repository)",
@@ -196,6 +211,9 @@ def parse_trivy_vulns(data: dict) -> list[dict]:
                 rec = (f"No fixed version of {pkg} is published yet. Check whether the vulnerable "
                        "function is used, apply vendor mitigations, or replace the package.")
             exploit = lookup(cwe, "deps")[1] if cwe_number(cwe) else None
+            cvss = v.get("CVSS") or {}
+            src = next((cvss[k] for k in ("nvd", "ghsa", "redhat") if isinstance(cvss.get(k), dict)
+                        and cvss[k].get("V3Score") is not None), None) or {}
             line = None
             locs = v.get("Locations") or []
             if locs and isinstance(locs, list):
@@ -215,6 +233,8 @@ def parse_trivy_vulns(data: dict) -> list[dict]:
                 exploitation=(f"{pkg} {installed} is affected by the publicly known vulnerability {vid}. "
                               + (exploit or lookup(None, "deps")[1])),
                 recommendation=rec,
+                cvss_score=src.get("V3Score"),
+                cvss_vector=src.get("V3Vector"),
             ))
     return out
 
@@ -395,6 +415,8 @@ def parse_nuclei(results: list[dict]) -> list[dict]:
             rule_id=template or None,
             cwe=cwe,
             recommendation=info.get("remediation"),
+            cvss_score=cls.get("cvss-score"),
+            cvss_vector=cls.get("cvss-metrics"),
         ))
     return out
 

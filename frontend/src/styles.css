@@ -241,3 +241,32 @@ tr.current td { background: #eef5f6; }
 .consent { display: flex; gap: 10px; align-items: flex-start; font-weight: 500; cursor: pointer; }
 .consent input { margin-top: 4px; accent-color: var(--teal); }
 .segmented { flex-wrap: wrap; }
+
+/* ---------- Finding management ---------- */
+.cvss {
+  font-family: var(--mono); font-size: 12px; font-weight: 600; padding: 1px 6px; border-radius: 4px;
+  background: #e8edf3; color: var(--text); min-width: 34px; text-align: center;
+}
+.cvss.est { color: var(--muted); font-weight: 400; }
+.badge-new, .badge-status {
+  display: inline-block; margin-left: 8px; font-size: 11px; font-weight: 600; padding: 1px 7px;
+  border-radius: 10px; vertical-align: 1px; text-transform: uppercase; letter-spacing: .3px;
+}
+.badge-new { background: #e4f3ef; color: #0B5F66; }
+.badge-status { background: #eef0f4; color: var(--muted); }
+.badge-status.st-fixed { background: #e6f4ea; color: var(--ok); }
+.finding.triaged .finding-title { color: var(--muted); }
+.triage { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--border); }
+.triage-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.triage-row select, .triage-row input {
+  font: inherit; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: #fff;
+}
+.triage-row input { flex: 1; min-width: 180px; }
+.btn.small-btn { padding: 6px 14px; font-size: 14px; }
+.diff-card .diff-head { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
+.diff-num { font-weight: 600; }
+.diff-num.new { color: var(--high); }
+.diff-num.fixed { color: var(--ok); }
+.fixed-list { list-style: none; padding: 0; margin: 12px 0 0; }
+.fixed-list li { padding: 6px 0; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.report-filters + .report-filters { margin-top: -4px; }

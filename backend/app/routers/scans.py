@@ -1,11 +1,12 @@
 import json
 import os
 import re
-import shutil
 import uuid
 import zipfile
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -25,6 +26,7 @@ from ..security import (
     validate_git_url,
     validate_targets,
 )
+from ..findings_mgmt import STATUSES, open_counts
 from ..summary import scan_brief
 
 router = APIRouter(prefix="/api", tags=["scans"], dependencies=[Depends(require_user)])
@@ -198,6 +200,10 @@ def _scan_detail(scan: Scan) -> dict:
         notes=scan.notes,
         error=scan.error,
         ai_summary=scan.ai_summary,
+        diff=scan.diff or {},
+        statuses=STATUSES,
+        suppressed={k: sum(1 for f in scan.findings if f.status == k)
+                    for k in ("false_positive", "accepted_risk", "fixed")},
     )
     return data
 
@@ -217,6 +223,9 @@ def finding_dict(f: Finding) -> dict:
         "exploitation": f.exploitation, "recommendation": f.recommendation, "cwe": f.cwe,
         "owasp": f.owasp, "scanners": f.scanners, "rule_id": f.rule_id, "check": f.check,
         "ai_verdict": f.ai_verdict, "ai_notes": f.ai_notes,
+        "fingerprint": f.fingerprint, "status": f.status or "open", "status_note": f.status_note,
+        "status_updated_at": f.status_updated_at, "is_new": f.is_new,
+        "cvss_score": f.cvss_score, "cvss_vector": f.cvss_vector, "cvss_source": f.cvss_source,
     }
 
 
@@ -230,6 +239,64 @@ def get_findings(scan_id: int, db: Session = Depends(get_db)):
     items = [finding_dict(f) for f in scan.findings]
     items.sort(key=sort_key)
     return items
+
+
+class FindingStatusIn(BaseModel):
+    status: str
+    note: str | None = Field(default=None, max_length=2000)
+
+
+@router.patch("/findings/{finding_id}")
+def update_finding(finding_id: int, body: FindingStatusIn, db: Session = Depends(get_db)):
+    if body.status not in STATUSES:
+        raise HTTPException(400, f"status must be one of: {', '.join(STATUSES)}")
+    f = db.get(Finding, finding_id)
+    if not f:
+        raise HTTPException(404, "Finding not found")
+    f.status = body.status
+    f.status_note = (body.note or "").strip() or None
+    f.status_updated_at = datetime.now(timezone.utc)
+    f.scan.counts = open_counts(f.scan.findings)
+    db.commit()
+    return finding_dict(f) | {"scan_counts": f.scan.counts}
+
+
+def _sorted_findings(scan: Scan) -> list[dict]:
+    from ..normalize import sort_key
+    return sorted((finding_dict(f) for f in scan.findings), key=sort_key)
+
+
+def _export_name(scan: Scan, ext: str) -> str:
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", scan.project.name)[:80] or "project"
+    return f"vapt-{name}-scan{scan.id}.{ext}"
+
+
+def _completed_scan(db: Session, scan_id: int) -> Scan:
+    scan = db.get(Scan, scan_id)
+    if not scan:
+        raise HTTPException(404, "Scan not found")
+    if scan.status != "completed":
+        raise HTTPException(409, "Exports are available when the scan has completed.")
+    return scan
+
+
+@router.get("/scans/{scan_id}/export.csv")
+def export_csv(scan_id: int, db: Session = Depends(get_db)):
+    from ..exports import to_csv
+    scan = _completed_scan(db, scan_id)
+    return Response(content="﻿" + to_csv(_sorted_findings(scan)), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{_export_name(scan, "csv")}"',
+                             "Cache-Control": "no-store"})
+
+
+@router.get("/scans/{scan_id}/export.sarif")
+def export_sarif(scan_id: int, db: Session = Depends(get_db)):
+    from ..exports import to_sarif
+    scan = _completed_scan(db, scan_id)
+    body = json.dumps(to_sarif(_scan_detail(scan), _sorted_findings(scan)), indent=2, default=str)
+    return Response(content=body, media_type="application/sarif+json",
+                    headers={"Content-Disposition": f'attachment; filename="{_export_name(scan, "sarif")}"',
+                             "Cache-Control": "no-store"})
 
 
 @router.get("/scans/{scan_id}/report.pdf")

@@ -9,7 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 
 from ..db import SessionLocal, init_db
-from ..models import Scan
+from ..findings_mgmt import fingerprint
+from ..models import Finding, Scan
 from .pipeline import WORK_ROOT, run_scan
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -35,6 +36,21 @@ def recover() -> None:
     if os.path.isdir(WORK_ROOT):
         for entry in os.listdir(WORK_ROOT):
             shutil.rmtree(os.path.join(WORK_ROOT, entry), ignore_errors=True)
+
+
+def backfill_fingerprints() -> None:
+    """Findings stored before finding management existed get a fingerprint once."""
+    db = SessionLocal()
+    try:
+        rows = db.scalars(select(Finding).where(Finding.fingerprint.is_(None)).limit(50000)).all()
+        for f in rows:
+            f.fingerprint = fingerprint({"check": f.check, "rule_id": f.rule_id, "file_path": f.file_path,
+                                         "snippet": f.snippet, "line": f.line, "title": f.title})
+        if rows:
+            db.commit()
+            log.info("backfilled fingerprints for %s finding(s)", len(rows))
+    finally:
+        db.close()
 
 
 def claim_next() -> int | None:
@@ -63,6 +79,7 @@ def main() -> None:
             log.warning("Database not ready: %s", str(e.orig or e).strip().splitlines()[0])
             time.sleep(2)
     recover()
+    backfill_fingerprints()
     log.info("worker ready")
     while True:
         try:

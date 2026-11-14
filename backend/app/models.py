@@ -2,7 +2,9 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     LargeBinary,
@@ -50,6 +52,9 @@ class Scan(Base):
     notes: Mapped[list] = mapped_column(JSON, default=list)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     ai_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Comparison with the previous completed scan of the same project:
+    # {"previous_scan_id", "new", "recurring", "fixed", "fixed_items": [...]}
+    diff: Mapped[dict] = mapped_column(JSON, default=dict)
 
     # Fernet-encrypted Git token. Wiped as soon as the scan finishes. Never returned by the API.
     git_token_enc: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
@@ -86,5 +91,16 @@ class Finding(Base):
     check: Mapped[str] = mapped_column(String(30))
     ai_verdict: Mapped[str | None] = mapped_column(String(30), nullable=True)
     ai_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Finding management. The fingerprint identifies the same issue across scans of a project.
+    fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # open | false_positive | accepted_risk | fixed
+    status: Mapped[str] = mapped_column(String(20), default="open")
+    status_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_new: Mapped[bool] = mapped_column(Boolean, default=True)
+    cvss_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cvss_vector: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    cvss_source: Mapped[str | None] = mapped_column(String(20), nullable=True)  # scanner | estimated
 
     scan: Mapped[Scan] = relationship(back_populates="findings")
