@@ -59,17 +59,42 @@ services:
       MAX_EXTRACT_MB: ${MAX_EXTRACT_MB:-500}
       MAX_EXTRACT_FILES: ${MAX_EXTRACT_FILES:-20000}
       MAX_REPO_MB: ${MAX_REPO_MB:-1000}
-      SCAN_TIMEOUT_SECONDS: ${SCAN_TIMEOUT_SECONDS:-1800}
+      SCAN_TIMEOUT_SECONDS: ${SCAN_TIMEOUT_SECONDS:-3600}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5-5}
+      ZAP_URL: http://zap:8090
+      ZAP_API_KEY: ${ZAP_API_KEY:-}
     volumes:
       - uploads:/data/uploads
       - scanner-cache:/cache
     tmpfs:
       - /tmp
+    networks: [default, scan]
     depends_on:
       db:
         condition: service_healthy
+
+  # OWASP ZAP daemon for live URL scans. Only the worker can reach it (separate 'scan' network,
+  # no published port), and ZAP itself cannot reach the database.
+  zap:
+    image: zaproxy/zap-stable:20261026
+    restart: unless-stopped
+    command:
+      - zap.sh
+      - -daemon
+      - -host
+      - 0.0.0.0
+      - -port
+      - "8090"
+      - -config
+      - api.key=${ZAP_API_KEY:-}
+      - -config
+      - api.addrs.addr.name=.*
+      - -config
+      - api.addrs.addr.regex=true
+      - -config
+      - connection.timeoutInSecs=30
+    networks: [scan]
 
   frontend:
     build: ./frontend
@@ -83,3 +108,7 @@ volumes:
   pgdata:
   uploads:
   scanner-cache:
+
+networks:
+  default:
+  scan:

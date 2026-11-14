@@ -23,6 +23,19 @@ and the folder is deleted when the scan ends. Live targets only receive ordinary
 |---|---|
 | Web security checks: security headers, cookie flags, TLS certificate and protocol, HTTP→HTTPS redirect, CORS, TRACE, exposed files (`/.git`, `/.env`, Spring Actuator, server-status, phpinfo, directory listing, Swagger/OpenAPI) | Built in |
 | Known CVEs and misconfigurations | Nuclei (community templates, refreshed daily) |
+| Crawl + passive scan, Swagger/OpenAPI import (spec found automatically next to `swagger-ui`) | OWASP ZAP |
+| Active scan: SQL injection, XSS, path traversal, command injection… (**off by default**) | OWASP ZAP |
+| Access control: each protected endpoint as user A, without credentials and as user B (GET only) | Built in |
+
+Optional **authenticated scanning**: paste the request headers of a logged-in test session
+(e.g. `Authorization: Bearer …` or `Cookie: …`) for user A, and optionally user B. They are
+encrypted while queued, wiped from the database when the worker picks the scan up, used only in
+memory, scrubbed from errors and findings, and passed to Nuclei via a `0600` file and to ZAP via
+replacer rules that are removed after the scan.
+
+**Every report** supports triage (Open / False positive / Accepted risk / Fixed, carried over to
+later scans), comparison with the previous scan (new / fixed / still present), CVSS v3 scores,
+and CSV, SARIF 2.1.0 and PDF export.
 
 ### Live URL scanning: rules
 
@@ -35,6 +48,10 @@ and the folder is deleted when the scan ends. Live targets only receive ordinary
   `intrusive` and brute-force templates excluded and interactsh (out-of-band callbacks to
   third-party servers) disabled. Expect a few thousand requests and a few minutes per target.
   Prefer a staging environment, and tell whoever monitors the target's WAF / logs.
+* The ZAP **active scan** sends real attack payloads and may create records, send emails or
+  trip a WAF. Use it on staging, with test accounts. ZAP runs in its own container on a network
+  shared only with the worker (it cannot reach the database), limited to the target hosts.
+  ZAP needs about 1–1.5 GB RAM: use `t3.large` (8 GB) or bigger when you scan live URLs.
 * On EC2, require IMDSv2 with a hop limit of 1 (EC2 console → instance → Actions → Instance
   settings → Modify instance metadata options) so no container can reach instance credentials.
 
@@ -44,7 +61,7 @@ and the folder is deleted when the scan ends. Live targets only receive ordinary
 browser ──► frontend (nginx, React)  :HTTP_PORT ─┐
                  │ /api                           │ only this port is published
                  ▼                                │
-            backend (FastAPI) ──► db (PostgreSQL) ◄── worker (Semgrep, Trivy, Gitleaks, Nuclei)
+            backend (FastAPI) ──► db (PostgreSQL) ◄── worker (Semgrep, Trivy, Gitleaks, Nuclei) ──► zap (OWASP ZAP, scan network only)
                  │                                     ▲
                  └──── uploads volume (zip files) ─────┘
 ```
@@ -103,6 +120,7 @@ Generate the secrets and paste them into `.env`:
 ```bash
 openssl rand -hex 32          # JWT_SECRET
 openssl rand -hex 24          # POSTGRES_PASSWORD
+openssl rand -hex 24          # ZAP_API_KEY
 python3 -c "import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())"   # TOKEN_ENCRYPTION_KEY
 ```
 

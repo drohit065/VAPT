@@ -40,15 +40,19 @@ CHECKS = {
     "iac": "Docker and Terraform files (Trivy config)",
     "web": "Web security checks: headers, TLS, cookies, CORS, exposed files",
     "nuclei": "Known vulnerabilities and misconfigurations (Nuclei templates)",
+    "zap": "OWASP ZAP: crawl + passive scan, imports Swagger/OpenAPI automatically",
+    "zap_active": "OWASP ZAP active scan: sends attack payloads (SQL injection, XSS, path traversal...). "
+                  "Staging only; can create data or trigger alerts",
     "authz": "Access control: compare no login / user A / user B (needs authentication below)",
     "ai": "AI review (Claude)",
 }
 DEFAULT_CHECKS = {"code": True, "deps": True, "secrets": True, "iac": True,
-                  "web": True, "nuclei": True, "authz": True, "ai": False}
+                  "web": True, "nuclei": True, "zap": True, "zap_active": False, "authz": True, "ai": False}
 CODE_SOURCES = ["git", "zip"]
 # Which inputs each check applies to.
 CHECK_SOURCES = {"code": CODE_SOURCES, "deps": CODE_SOURCES, "secrets": CODE_SOURCES, "iac": CODE_SOURCES,
-                 "ai": CODE_SOURCES, "web": ["url"], "nuclei": ["url"], "authz": ["url"]}
+                 "ai": CODE_SOURCES, "web": ["url"], "nuclei": ["url"], "zap": ["url"], "zap_active": ["url"],
+                 "authz": ["url"]}
 
 
 @router.get("/meta")
@@ -107,6 +111,7 @@ async def create_scan(
     auth_a: str | None = Form(None),
     auth_b: str | None = Form(None),
     endpoints: str | None = Form(None),
+    spec_url: str | None = Form(None),
     checks: str | None = Form(None),
     file: UploadFile | None = File(None),
     db: Session = Depends(get_db),
@@ -126,6 +131,7 @@ async def create_scan(
             headers_a = parse_auth_headers(auth_a)
             headers_b = parse_auth_headers(auth_b)
             eps = validate_endpoints(endpoints, urls)
+            specs = validate_endpoints(spec_url, urls)[:3]
         except (ValidationError, ValueError) as e:
             raise HTTPException(400, str(e) or "Invalid URL")
         if headers_b and not headers_a:
@@ -149,7 +155,10 @@ async def create_scan(
         if headers_a:
             notes.append("Authenticated scan as user A" + (" with user B for comparison" if headers_b else "")
                          + f" (header names: {', '.join(headers_a)}; values are never stored).")
-        options = {"endpoints": eps, "auth_a": bool(headers_a), "auth_b": bool(headers_b)}
+        if check_cfg.get("zap_active"):
+            check_cfg["zap"] = True  # the active scan needs ZAP's crawl first
+            notes.append("ZAP active scan requested: attack payloads are sent to the targets.")
+        options = {"endpoints": eps, "specs": specs, "auth_a": bool(headers_a), "auth_b": bool(headers_b)}
         scan = Scan(project_id=project.id, checks=check_cfg, notes=notes, status="queued",
                     git_token_enc=creds_enc, options=options)
         db.add(scan)

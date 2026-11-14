@@ -11,6 +11,7 @@ const CHECK_LABELS = {
   web: 'Web checks',
   nuclei: 'Nuclei',
   authz: 'Access control',
+  zap: 'OWASP ZAP',
 }
 const STATUS_LABELS = {
   open: 'Open',

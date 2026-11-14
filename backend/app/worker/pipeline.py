@@ -38,6 +38,7 @@ from sqlalchemy import select
 from ..findings_mgmt import apply_history, open_counts
 from ..security import decrypt_token, scrub
 from . import dast
+from . import zap as zap_mod
 from . import detect as detect_mod
 from .fetch import FetchError, clone, extract_zip, remove_tree, single_top_dir
 
@@ -53,6 +54,7 @@ CHECK_STEPS = [
     ("iac", "Docker and Terraform files (Trivy config)"),
     ("web", "Web security checks (headers, TLS, cookies, CORS, exposed files)"),
     ("nuclei", "Known vulnerabilities and misconfigurations (Nuclei)"),
+    ("zap", "OWASP ZAP: crawl, passive scan and OpenAPI import"),
     ("authz", "Access control (no login / user A / user B)"),
     ("ai", "AI review (Claude)"),
 ]
@@ -351,7 +353,16 @@ def run_scan(scan_id: int) -> None:
             scan.frameworks = sorted({x for t in targets for x in dast.detect_tech(t.resp)})
             db.commit()
             scan_root, has_git = None, False
-            steps.finish("fetch", detail="; ".join(f"{t.url} -> HTTP {t.resp.status}" for t in targets)[:500])
+            netlocs = {urlsplit(t.url).netloc for t in targets}
+            specs = dast.discover_specs(targets, auth_a, (scan.options or {}).get("specs") or [])
+            spec_endpoints = [u for su, doc in specs for u in dast.spec_get_endpoints(doc, su, netlocs)]
+            if specs:
+                notes.append("OpenAPI spec found: " + ", ".join(su for su, _ in specs)
+                             + f" ({len(spec_endpoints)} GET endpoint(s) without path parameters).")
+            detail = "; ".join(f"{t.url} -> HTTP {t.resp.status}" for t in targets)
+            if specs:
+                detail += f"; {len(specs)} OpenAPI spec(s) found"
+            steps.finish("fetch", detail=detail[:500])
         else:
             steps.start("fetch", "Extracting archive")
             if not scan.upload_path or not os.path.isfile(scan.upload_path):
@@ -377,6 +388,13 @@ def run_scan(scan_id: int) -> None:
         # 3. checks
         all_findings: list[dict] = []
         secrets: list[str] = []
+
+        def run_zap():
+            found, detail, zap_notes = zap_mod.run(
+                [t.url for t in targets], [su for su, _ in specs], auth_a, bool(checks.get("zap_active")),
+                budget, skip_covered=bool(checks.get("web")), scan_id=scan.id)
+            notes.extend(zap_notes)
+            return found, detail
         runners = {
             "code": lambda: check_code(scan_root, out_dir, home, budget()),
             "deps": lambda: check_deps(scan_root, out_dir, home, budget()),
@@ -385,8 +403,9 @@ def run_scan(scan_id: int) -> None:
             "web": lambda: (lambda f: (f, f"{len(f)} issue(s) on {len(targets)} target(s)"))(
                 dast.run_web_checks(targets, budget, auth_a)),
             "nuclei": lambda: check_nuclei([t.url for t in targets], out_dir, home, budget(), auth_a),
+            "zap": lambda: run_zap(),
             "authz": lambda: dast.run_authz(
-                (scan.options or {}).get("endpoints") or [t.url for t in targets],
+                (scan.options or {}).get("endpoints") or (spec_endpoints + [t.url for t in targets])[:50],
                 {urlsplit(t.url).netloc: t.ip for t in targets},
                 {urlsplit(t.url).netloc: t.verify for t in targets},
                 budget, auth_a, auth_b or None),

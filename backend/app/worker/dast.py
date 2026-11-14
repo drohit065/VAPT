@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import difflib
 import http.client
+import json
 import re
 import socket
 import ssl
@@ -611,3 +612,87 @@ def run_authz(endpoints: list[str], ips: dict[str, str], verify: dict[str, bool]
     if skipped:
         detail += f", {skipped} skipped (not 2xx as user A or unreachable)"
     return findings, detail
+
+
+# ---------------------------------------------------------------- OpenAPI / Swagger discovery
+
+SPEC_SUFFIXES = ["/v3/api-docs", "/v2/api-docs", "/openapi.json", "/swagger.json", "/api-docs",
+                 "/swagger/v1/swagger.json", "/openapi.yaml"]
+
+
+def spec_candidates(url: str) -> list[str]:
+    """Where an OpenAPI document is likely to live, given a target (e.g. a swagger-ui page)."""
+    p = urlsplit(url)
+    origin = f"{p.scheme}://{p.netloc}"
+    prefixes = [""]
+    m = re.search(r"^(.*?)/swagger-ui(?:/|\.html|$)", p.path)
+    if m and m.group(1):
+        prefixes.insert(0, m.group(1).rstrip("/"))
+    out = []
+    for pre in prefixes:
+        for suf in SPEC_SUFFIXES:
+            u = origin + pre + suf
+            if u not in out:
+                out.append(u)
+    return out
+
+
+def parse_spec(body: bytes) -> dict | None:
+    try:
+        doc = json.loads(body.decode("utf-8", "replace"))
+    except ValueError:
+        return None
+    if isinstance(doc, dict) and ("openapi" in doc or "swagger" in doc) and isinstance(doc.get("paths"), dict):
+        return doc
+    return None
+
+
+def spec_get_endpoints(doc: dict, spec_url: str, allowed_netlocs: set[str], limit: int = 30) -> list[str]:
+    """GET operations without path parameters, as absolute URLs on the allowed hosts."""
+    p = urlsplit(spec_url)
+    base = f"{p.scheme}://{p.netloc}"
+    servers = doc.get("servers") or []
+    if servers and isinstance(servers[0], dict):
+        s = str(servers[0].get("url") or "")
+        sp = urlsplit(s)
+        if sp.netloc in allowed_netlocs:
+            base = s.rstrip("/")
+        elif s.startswith("/"):
+            base += s.rstrip("/")
+    elif doc.get("basePath"):
+        base += str(doc["basePath"]).rstrip("/")
+    out = []
+    for path, ops in doc.get("paths", {}).items():
+        if not isinstance(ops, dict) or "get" not in ops or "{" in path:
+            continue
+        url = base + (path if path.startswith("/") else "/" + path)
+        if urlsplit(url).netloc in allowed_netlocs and url not in out:
+            out.append(url)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def discover_specs(targets: list[Target], auth: dict | None, explicit: list[str]) -> list[tuple[str, dict]]:
+    """Return [(spec_url, doc)] found at explicit URLs or common locations on the targets."""
+    found: list[tuple[str, dict]] = []
+    seen: set[str] = set()
+    by_host = {urlsplit(t.url).netloc: t for t in targets}
+    candidates = list(explicit)
+    for t in targets:
+        candidates += spec_candidates(t.url)
+    for c in candidates:
+        if c in seen or len(found) >= 3:
+            continue
+        seen.add(c)
+        t = by_host.get(urlsplit(c).netloc)
+        if not t:
+            continue
+        try:
+            r = fetch(c, t.ip, headers=auth, verify=t.verify)
+        except (OSError, http.client.HTTPException, ssl.SSLError):
+            continue
+        doc = parse_spec(r.body) if r.status == 200 else None
+        if doc:
+            found.append((c, doc))
+    return found

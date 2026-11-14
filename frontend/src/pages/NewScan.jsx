@@ -14,6 +14,7 @@ export default function NewScan() {
   const [authA, setAuthA] = useState('')
   const [authB, setAuthB] = useState('')
   const [endpoints, setEndpoints] = useState('')
+  const [specUrl, setSpecUrl] = useState('')
   const [showAuth, setShowAuth] = useState(false)
   const [checks, setChecks] = useState({})
   const [error, setError] = useState('')
@@ -57,6 +58,7 @@ export default function NewScan() {
       if (authA.trim()) form.append('auth_a', authA.trim())
       if (authB.trim()) form.append('auth_b', authB.trim())
       if (endpoints.trim()) form.append('endpoints', endpoints.trim())
+      if (specUrl.trim()) form.append('spec_url', specUrl.trim())
     } else {
       form.append('file', file)
     }
@@ -127,6 +129,14 @@ export default function NewScan() {
                           placeholder={'https://app.example.com\nhttps://api.example.com/health'}
                           value={targets} onChange={e => setTargets(e.target.value)} />
               </div>
+              <div className="field">
+                <label htmlFor="spec">
+                  OpenAPI / Swagger spec URL <span className="muted small">(optional: found automatically next to a swagger-ui
+                  URL, e.g. …/v3/api-docs)</span>
+                </label>
+                <input id="spec" type="url" className="mono" placeholder="https://api.example.com/v3/api-docs"
+                       value={specUrl} onChange={e => setSpecUrl(e.target.value)} />
+              </div>
               <label className="consent">
                 <input type="checkbox" checked={authorized} onChange={e => setAuthorized(e.target.checked)} />
                 <span>I own these targets or have written permission to security-test them.</span>
@@ -195,7 +205,7 @@ export default function NewScan() {
           {visible.map(c => {
             const disabled = c.key === 'ai' && !meta.ai_available
             return (
-              <label key={c.key} className={`switch-row${disabled ? ' disabled' : ''}`}>
+              <label key={c.key} className={`switch-row${disabled ? ' disabled' : ''}${c.key === 'zap_active' ? ' risky' : ''}`}>
                 <span>
                   <span className="switch-label">{c.label}</span>
                   {disabled && <span className="small muted switch-help">Unavailable: {meta.ai_unavailable_reason}</span>}

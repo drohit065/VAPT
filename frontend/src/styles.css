@@ -272,3 +272,5 @@ tr.current td { background: #eef5f6; }
 .report-filters + .report-filters { margin-top: -4px; }
 .auth-box { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
 .auth-toggle { color: var(--teal); font-weight: 600; padding: 0; }
+.switch-row.risky .switch-label { color: var(--high); }
+.field input[type="url"]#spec { width: 100%; }
