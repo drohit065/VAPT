@@ -15,6 +15,9 @@ export default function NewScan() {
   const [authB, setAuthB] = useState('')
   const [endpoints, setEndpoints] = useState('')
   const [specUrl, setSpecUrl] = useState('')
+  const [imageRef, setImageRef] = useState('')
+  const [regUser, setRegUser] = useState('')
+  const [regPass, setRegPass] = useState('')
   const [showAuth, setShowAuth] = useState(false)
   const [checks, setChecks] = useState({})
   const [error, setError] = useState('')
@@ -35,6 +38,10 @@ export default function NewScan() {
       setError('Enter an https:// Git repository URL.'); return
     }
     if (mode === 'zip' && !file) { setError('Choose a .zip file.'); return }
+    if (mode === 'image' && !imageRef.trim()) { setError('Enter an image reference, e.g. nginx:1.27.'); return }
+    if (mode === 'image' && !!regUser.trim() !== !!regPass.trim()) {
+      setError('Enter both the registry username and password/token, or neither.'); return
+    }
     if (mode === 'url') {
       const list = targets.split(/[\n,]/).map(t => t.trim()).filter(Boolean)
       if (!list.length) { setError('Enter at least one URL.'); return }
@@ -52,6 +59,10 @@ export default function NewScan() {
       form.append('repo_url', url.trim())
       if (branch.trim()) form.append('branch', branch.trim())
       if (token.trim()) form.append('token', token.trim())
+    } else if (mode === 'image') {
+      form.append('image_ref', imageRef.trim())
+      if (regUser.trim()) form.append('registry_user', regUser.trim())
+      if (regPass.trim()) form.append('registry_password', regPass.trim())
     } else if (mode === 'url') {
       form.append('target_urls', targets)
       form.append('authorized', authorized ? 'true' : 'false')
@@ -65,7 +76,7 @@ export default function NewScan() {
     setBusy(true)
     try {
       const res = await api('/api/scans', { method: 'POST', form })
-      setToken(''); setAuthA(''); setAuthB('')
+      setToken(''); setAuthA(''); setAuthB(''); setRegPass('')
       navigate(`/scans/${res.id}`)
     } catch (err) {
       setError(err.message)
@@ -96,6 +107,7 @@ export default function NewScan() {
             <button type="button" role="tab" aria-selected={mode === 'git'} className={mode === 'git' ? 'on' : ''} onClick={() => setMode('git')}>Git repository</button>
             <button type="button" role="tab" aria-selected={mode === 'zip'} className={mode === 'zip' ? 'on' : ''} onClick={() => setMode('zip')}>Zip upload</button>
             <button type="button" role="tab" aria-selected={mode === 'url'} className={mode === 'url' ? 'on' : ''} onClick={() => setMode('url')}>Website / API</button>
+            <button type="button" role="tab" aria-selected={mode === 'image'} className={mode === 'image' ? 'on' : ''} onClick={() => setMode('image')}>Container image</button>
           </div>
 
           {mode === 'git' ? (
@@ -119,6 +131,31 @@ export default function NewScan() {
               </div>
               <p className="muted small" style={{ margin: 0 }}>
                 The token is encrypted while the scan waits in the queue, used once to clone, then deleted. It is never shown again or written to logs.
+              </p>
+            </>
+          ) : mode === 'image' ? (
+            <>
+              <div className="field">
+                <label htmlFor="img">Image reference</label>
+                <input id="img" type="text" className="mono" spellCheck={false}
+                       placeholder="nginx:1.27   ghcr.io/org/app:1.4.2   123456789012.dkr.ecr.ap-south-1.amazonaws.com/app:prod"
+                       value={imageRef} onChange={e => setImageRef(e.target.value)} />
+              </div>
+              <div className="grid2">
+                <div className="field">
+                  <label htmlFor="ru">Registry username <span className="muted small">(private images only)</span></label>
+                  <input id="ru" type="text" autoComplete="off" value={regUser} onChange={e => setRegUser(e.target.value)}
+                         placeholder="e.g. AWS for ECR, your GitHub user for GHCR" />
+                </div>
+                <div className="field">
+                  <label htmlFor="rp">Registry password / token</label>
+                  <input id="rp" type="password" autoComplete="off" value={regPass} onChange={e => setRegPass(e.target.value)}
+                         placeholder="Read-only token" />
+                </div>
+              </div>
+              <p className="muted small" style={{ margin: 0 }}>
+                The image is pulled directly from the registry and analysed layer by layer. It is never run.
+                Registry credentials are encrypted while queued and deleted after the scan.
               </p>
             </>
           ) : mode === 'url' ? (

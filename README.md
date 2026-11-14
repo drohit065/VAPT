@@ -1,7 +1,17 @@
 # VAPT Scanner
 
-A self-hosted security scanner with a web dashboard: static analysis of source code (SAST) and
-scanning of live websites and APIs (DAST).
+A self-hosted security scanner with a web dashboard: static analysis of source code (SAST),
+scanning of live websites and APIs (DAST), infrastructure checks and container image scanning.
+
+**Container image** (Docker Hub, GHCR, ECR or any public registry; optional registry login):
+OS and library vulnerabilities, secrets in image layers, image misconfigurations (root user, no
+HEALTHCHECK) and end-of-life base images, with Trivy `image --image-src remote` (pulled straight
+from the registry, never run, no Docker daemon needed).
+
+**Team features:** users with roles (viewer: read-only; analyst: start scans, triage, schedules;
+admin: manage users, audit log) next to the built-in admin from `.env`; an audit log of logins,
+scans, triage decisions, exports and user changes; scheduled daily / weekly re-scans of Git,
+website and image projects (credentials are never stored, so scheduled runs are unauthenticated).
 
 It **only reads and reports**. It never builds, executes, modifies or auto-fixes the code it
 scans. Code is cloned or unzipped into a temporary folder per scan, read by static analysers,

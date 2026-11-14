@@ -189,6 +189,52 @@ def validate_endpoints(raw: str | None, targets: list[str]) -> list[str]:
     return out
 
 
+# ---------------------------------------------------------------- container images
+
+_IMAGE_RE = re.compile(
+    r"^(?:(?P<registry>[A-Za-z0-9.-]+(?::\d{1,5})?)/)?"
+    r"(?P<repo>[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*)"
+    r"(?::(?P<tag>[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}))?"
+    r"(?:@(?P<digest>sha256:[a-f0-9]{64}))?$"
+)
+
+
+def parse_image_ref(ref: str) -> dict:
+    """Validate a container image reference. Returns {ref, registry, repo, tag, digest}.
+    A first path component with '.', ':' or 'localhost' is a registry host; it must be public."""
+    ref = (ref or "").strip()
+    if not ref or len(ref) > 500 or ref.startswith("-"):
+        raise ValidationError("Enter an image reference, e.g. nginx:1.27 or ghcr.io/org/app:1.2.")
+    m = _IMAGE_RE.match(ref)
+    if not m:
+        raise ValidationError("That is not a valid image reference (e.g. nginx:1.27, ghcr.io/org/app:1.2).")
+    registry, repo = m.group("registry"), m.group("repo")
+    if registry and not ("." in registry or ":" in registry or registry == "localhost"):
+        # e.g. "library/nginx": the first component is part of the repository, which must be lowercase
+        if not re.fullmatch(r"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*", registry):
+            raise ValidationError("Image repository names must be lowercase.")
+        repo, registry = f"{registry}/{repo}", None
+    if registry:
+        host = registry.split(":")[0].lower()
+        if host == "localhost":
+            raise ValidationError("Local registries cannot be scanned.")
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            ip = None
+        if ip is not None and not ip.is_global:
+            raise ValidationError("Private registry addresses cannot be scanned.")
+    return {"ref": ref, "registry": registry or "docker.io", "repo": repo,
+            "tag": m.group("tag") or ("" if m.group("digest") else "latest"), "digest": m.group("digest")}
+
+
+def assert_public_registry(info: dict) -> None:
+    host = info["registry"]
+    if host == "docker.io":
+        return
+    assert_public_target(f"https://{host}/")
+
+
 def target_project_name(urls: list[str]) -> str:
     first = urlsplit(urls[0]).hostname or "website"
     return first if len(urls) == 1 else f"{first} (+{len(urls) - 1})"

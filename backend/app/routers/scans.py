@@ -17,11 +17,13 @@ from ..models import Finding, Project, Scan
 from ..security import (
     ValidationError,
     assert_public_host,
+    assert_public_registry,
     assert_public_target,
     canonical_repo_source,
     encrypt_token,
     project_name_from_url,
     parse_auth_headers,
+    parse_image_ref,
     target_project_name,
     validate_branch,
     validate_endpoints,
@@ -40,6 +42,7 @@ CHECKS = {
     "iac": "Docker and Terraform files (Trivy config)",
     "web": "Web security checks: headers, TLS, cookies, CORS, exposed files",
     "nuclei": "Known vulnerabilities and misconfigurations (Nuclei templates)",
+    "image": "OS and library vulnerabilities, embedded secrets and image misconfigurations (Trivy image)",
     "tls": "TLS protocols and cipher suites (nmap ssl-enum-ciphers)",
     "ports": "Open ports and exposed services: ~1,300 TCP ports incl. databases, Redis, Docker, Kubernetes (nmap). Skipped behind a CDN",
     "zap": "OWASP ZAP: crawl + passive scan, imports Swagger/OpenAPI automatically",
@@ -49,11 +52,11 @@ CHECKS = {
     "ai": "AI review (Claude)",
 }
 DEFAULT_CHECKS = {"code": True, "deps": True, "secrets": True, "iac": True,
-                  "web": True, "nuclei": True, "tls": True, "ports": False, "zap": True, "zap_active": False, "authz": True, "ai": False}
+                  "web": True, "nuclei": True, "image": True, "tls": True, "ports": False, "zap": True, "zap_active": False, "authz": True, "ai": False}
 CODE_SOURCES = ["git", "zip"]
 # Which inputs each check applies to.
 CHECK_SOURCES = {"code": CODE_SOURCES, "deps": CODE_SOURCES, "secrets": CODE_SOURCES, "iac": CODE_SOURCES,
-                 "ai": CODE_SOURCES, "web": ["url"], "nuclei": ["url"], "zap": ["url"], "zap_active": ["url"], "tls": ["url"], "ports": ["url"],
+                 "ai": CODE_SOURCES, "web": ["url"], "nuclei": ["url"], "zap": ["url"], "zap_active": ["url"], "tls": ["url"], "ports": ["url"], "image": ["image"],
                  "authz": ["url"]}
 
 
@@ -115,6 +118,9 @@ async def create_scan(
     auth_b: str | None = Form(None),
     endpoints: str | None = Form(None),
     spec_url: str | None = Form(None),
+    image_ref: str | None = Form(None),
+    registry_user: str | None = Form(None),
+    registry_password: str | None = Form(None),
     checks: str | None = Form(None),
     file: UploadFile | None = File(None),
 
@@ -129,9 +135,34 @@ async def create_scan(
               {"source_type": project.source_type, "checks": [k for k, v in (scan.checks or {}).items() if v]},
               ip, db=db)
         return {"id": scan.id, "project_id": project.id}
-    if source_type not in ("git", "zip", "url"):
-        raise HTTPException(400, "source_type must be 'git', 'zip' or 'url'")
+    if source_type not in ("git", "zip", "url", "image"):
+        raise HTTPException(400, "source_type must be 'git', 'zip', 'url' or 'image'")
     check_cfg, notes = _parse_checks(checks, source_type)
+
+    if source_type == "image":
+        try:
+            info = parse_image_ref(image_ref or "")
+            assert_public_registry(info)
+        except (ValidationError, ValueError) as e:
+            raise HTTPException(400, str(e) or "Invalid image reference")
+        user_, pass_ = (registry_user or "").strip(), (registry_password or "").strip()
+        if bool(user_) != bool(pass_):
+            raise HTTPException(400, "Enter both the registry username and password/token, or neither.")
+        if len(user_) > 200 or len(pass_) > 4000:
+            raise HTTPException(400, "Registry credentials are too long.")
+        creds_enc = None
+        if user_:
+            try:
+                creds_enc = encrypt_token(json.dumps({"u": user_, "p": pass_}))
+            except RuntimeError:
+                raise HTTPException(500, "Server is missing TOKEN_ENCRYPTION_KEY; cannot accept credentials.")
+            notes.append("Registry login provided (never stored after the scan).")
+        project = _get_or_create_project(db, "image", info["ref"], info["ref"])
+        scan = Scan(project_id=project.id, checks=check_cfg, notes=notes, status="queued",
+                    git_token_enc=creds_enc, branch=info["tag"] or None)
+        db.add(scan)
+        db.commit()
+        return created(scan, project)
 
     if source_type == "url":
         if (authorized or "").lower() not in ("true", "1", "yes", "on"):
@@ -233,7 +264,7 @@ async def create_scan(
         db.commit()
         return created(scan, project)
 
-    raise HTTPException(400, "source_type must be 'git', 'zip' or 'url'")
+    raise HTTPException(400, "source_type must be 'git', 'zip', 'url' or 'image'")
 
 
 def _scan_detail(scan: Scan) -> dict:

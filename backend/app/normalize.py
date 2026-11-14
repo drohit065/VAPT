@@ -362,6 +362,32 @@ def parse_gitleaks(data: list, root: str | None = None) -> list[dict]:
     return out
 
 
+# ---------------------------------------------------------------- Trivy secrets (container images)
+
+
+def parse_trivy_secrets(data: dict) -> list[dict]:
+    """Secrets Trivy found inside image layers. Trivy masks the value (****); we mask again anyway."""
+    out = []
+    for res in (data or {}).get("Results", []) or []:
+        target = rel_path(res.get("Target", ""), None)
+        for s in res.get("Secrets", []) or []:
+            rule = s.get("RuleID") or "secret"
+            match = mask_assignments(str(s.get("Match") or ""))
+            out.append(make_finding(
+                severity=TRIVY_SEV.get(str(s.get("Severity", "")).upper(), "High"),
+                title=f"Secret in image: {s.get('Title') or _rule_label(rule)}",
+                file_path=target, line=s.get("StartLine"),
+                snippet=f"{s.get('StartLine', '?')} | {match}"[:600] if match else "",
+                description=(f"A value matching '{rule}' ({s.get('Category') or 'secret'}) is stored in a file "
+                             "inside the image. Anyone who can pull the image can read it. "
+                             "The value is masked in this report."),
+                check="secrets", scanner="trivy", rule_id=f"trivy-secret.{rule}",
+                cwe="CWE-798: Use of Hard-coded Credentials",
+                owasp="A07:2021 - Identification and Authentication Failures",
+            ))
+    return out
+
+
 # ---------------------------------------------------------------- Nuclei (live URLs)
 
 NUCLEI_SEV = {"critical": "Critical", "high": "High", "medium": "Medium", "low": "Low"}

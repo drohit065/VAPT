@@ -26,6 +26,8 @@ from ..normalize import (
     count_by_severity,
     dedupe,
     parse_gitleaks,
+    make_finding,
+    parse_trivy_secrets,
     parse_nuclei,
     parse_semgrep,
     parse_trivy_config,
@@ -36,7 +38,7 @@ from ..normalize import (
 from sqlalchemy import select
 
 from ..findings_mgmt import apply_history, open_counts
-from ..security import decrypt_token, scrub
+from ..security import assert_public_registry, decrypt_token, parse_image_ref, scrub
 from . import dast
 from . import infra
 from . import zap as zap_mod
@@ -55,6 +57,7 @@ CHECK_STEPS = [
     ("iac", "Docker and Terraform files (Trivy config)"),
     ("web", "Web security checks (headers, TLS, cookies, CORS, exposed files)"),
     ("nuclei", "Known vulnerabilities and misconfigurations (Nuclei)"),
+    ("image", "Container image: vulnerabilities, secrets, misconfigurations (Trivy image)"),
     ("tls", "TLS protocols and ciphers (nmap)"),
     ("ports", "Open ports and exposed services (nmap)"),
     ("zap", "OWASP ZAP: crawl, passive scan and OpenAPI import"),
@@ -121,12 +124,14 @@ def tool_env(home: str) -> dict:
     return env
 
 
-def run_tool(cmd: list[str], cwd: str, home: str, timeout: float) -> subprocess.CompletedProcess:
+def run_tool(cmd: list[str], cwd: str, home: str, timeout: float,
+             extra_env: dict | None = None) -> subprocess.CompletedProcess:
+    """extra_env carries per-call secrets (e.g. registry login) via the environment, never argv."""
     if timeout <= 5:
         raise TimeoutError("Scan time limit reached")
     try:
-        return subprocess.run(cmd, cwd=cwd, env=tool_env(home), capture_output=True, text=True,
-                              timeout=timeout)
+        return subprocess.run(cmd, cwd=cwd, env={**tool_env(home), **(extra_env or {})}, capture_output=True,
+                              text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise TimeoutError(f"{cmd[0]} exceeded the time limit")
 
@@ -196,6 +201,46 @@ def check_secrets(src, out_dir, home, budget, has_git: bool):
     os.remove(out)
     scope = "files and full Git history" if has_git else "files (zip uploads have no Git history)"
     return findings, f"{len(data)} raw match(es) in {scope}", secrets
+
+
+def check_image(info, creds, out_dir, home, budget):
+    out = os.path.join(out_dir, "trivy-image.json")
+    cmd = ["trivy", "image", "--image-src", "remote", "--scanners", "vuln,secret,misconfig",
+           "--image-config-scanners", "misconfig,secret", "--format", "json", "--output", out, "--quiet",
+           "--timeout", f"{int(budget)}s", "--", info["ref"]]
+    proc = run_tool(cmd, out_dir, home, budget, extra_env=creds)
+    data = _load_json(out)
+    if data is None or proc.returncode != 0:
+        err = _tail(proc.stderr, 400)
+        if "UNAUTHORIZED" in err or "authentication required" in err or "denied" in err.lower():
+            raise RuntimeError("The registry refused access: check the image name and the registry login.")
+        if "MANIFEST_UNKNOWN" in err or "not found" in err.lower():
+            raise RuntimeError(f"Image {info['ref']} was not found in the registry.")
+        raise RuntimeError(f"Trivy image failed: {err}")
+    findings = parse_trivy_vulns(data) + parse_trivy_secrets(data) + parse_trivy_config(data, None)
+    meta = data.get("Metadata") or {}
+    os_info = meta.get("OS") or {}
+    image_meta = {
+        "os": " ".join(x for x in (os_info.get("Family"), os_info.get("Name")) if x),
+        "digest": next((d.split("@", 1)[-1] for d in meta.get("RepoDigests") or [] if "@" in d), None),
+        "eosl": bool(os_info.get("EOSL")),
+    }
+    if image_meta["eosl"]:
+        findings.append(make_finding(
+            severity="High", title=f"Base image OS is end-of-life ({image_meta['os']})", file_path=info["ref"],
+            line=None, snippet=image_meta["os"], check="image", scanner="trivy", rule_id="image.eosl",
+            cwe="CWE-1104", owasp="A06:2021 - Vulnerable and Outdated Components",
+            description="The operating system in this image no longer receives security updates.",
+            exploitation="New vulnerabilities in the OS packages will never be fixed, so the image accumulates "
+                         "exploitable flaws over time.",
+            recommendation="Rebuild on a supported base image version (e.g. a current Debian, Alpine or "
+                           "distroless release) and rebuild regularly."))
+    counts = {"vuln": sum(1 for f in findings if f["check"] == "deps"),
+              "secret": sum(1 for f in findings if f["check"] == "secrets"),
+              "config": sum(1 for f in findings if f["check"] == "iac")}
+    detail = (f"{counts['vuln']} vulnerable package(s), {counts['secret']} secret(s), "
+              f"{counts['config']} misconfiguration(s)" + (f" · {image_meta['os']}" if image_meta["os"] else ""))
+    return findings, detail, image_meta
 
 
 def check_iac(src, out_dir, home, budget):
@@ -304,6 +349,8 @@ def run_scan(scan_id: int) -> None:
     auth_a: dict = {}
     auth_b: dict = {}
     secret_values_auth: list[str] = []
+    registry_creds: dict = {}
+    image_info: dict = {}
     deadline = time.monotonic() + s.scan_timeout_seconds
     steps = Steps(db, scan)
     notes = list(scan.notes or [])
@@ -314,8 +361,11 @@ def run_scan(scan_id: int) -> None:
     try:
         checks = scan.checks or {}
         is_url = scan.project.source_type == "url"
-        plan = [("fetch", "Connecting to targets" if is_url else "Fetching code")]
-        if not is_url:
+        is_image = scan.project.source_type == "image"
+        no_source = is_url or is_image  # nothing is downloaded to disk for these
+        plan = [("fetch", "Connecting to targets" if is_url else "Checking image reference" if is_image
+                 else "Fetching code")]
+        if not no_source:
             plan.append(("detect", "Detecting languages and frameworks"))
         plan += [(k, l) for k, l in CHECK_STEPS if checks.get(k)]
         plan += [("report", "Building report")]
@@ -366,6 +416,20 @@ def run_scan(scan_id: int) -> None:
             if specs:
                 detail += f"; {len(specs)} OpenAPI spec(s) found"
             steps.finish("fetch", detail=detail[:500])
+        elif is_image:
+            steps.start("fetch", "Validating image reference and registry")
+            image_info = parse_image_ref(project.source)
+            assert_public_registry(image_info)
+            if scan.git_token_enc:
+                reg = json.loads(decrypt_token(scan.git_token_enc))
+                registry_creds = {"TRIVY_USERNAME": reg.get("u") or "", "TRIVY_PASSWORD": reg.get("p") or ""}
+                secret_values_auth = [v for v in registry_creds.values() if v]
+                scan.git_token_enc = None
+                db.commit()
+            scan_root, has_git = None, False
+            steps.finish("fetch", detail=f"{image_info['registry']}/{image_info['repo']}"
+                         + (f":{image_info['tag']}" if image_info["tag"] else "")
+                         + (" (registry login provided)" if registry_creds else ""))
         else:
             steps.start("fetch", "Extracting archive")
             if not scan.upload_path or not os.path.isfile(scan.upload_path):
@@ -380,7 +444,7 @@ def run_scan(scan_id: int) -> None:
             steps.finish("fetch", detail=detail)
 
         # 2. detect
-        if not is_url:
+        if not no_source:
             steps.start("detect")
             found = detect_mod.detect(scan_root)
             scan.languages, scan.frameworks = found["languages"], found["frameworks"]
@@ -399,6 +463,16 @@ def run_scan(scan_id: int) -> None:
             notes.extend(zap_notes)
             return found, detail
 
+        def run_image():
+            found, detail, meta = check_image(image_info, registry_creds, out_dir, home, budget())
+            scan.languages = []
+            scan.frameworks = [x for x in (meta.get("os"),) if x]
+            if meta.get("digest"):
+                scan.commit_sha = meta["digest"].replace("sha256:", "")[:64]
+            scan.branch = image_info.get("tag") or None
+            db.commit()
+            return found, detail
+
         def run_ports():
             found, detail, port_notes = infra.run_ports(targets, out_dir, home, budget, run_tool)
             notes.extend(port_notes)
@@ -414,6 +488,7 @@ def run_scan(scan_id: int) -> None:
             "zap": lambda: run_zap(),
             "tls": lambda: infra.run_tls(targets, out_dir, home, budget, run_tool),
             "ports": lambda: run_ports(),
+            "image": lambda: run_image(),
             "authz": lambda: dast.run_authz(
                 (scan.options or {}).get("endpoints") or (spec_endpoints + [t.url for t in targets])[:50],
                 {urlsplit(t.url).netloc: t.ip for t in targets},

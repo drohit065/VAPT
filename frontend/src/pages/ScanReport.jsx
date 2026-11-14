@@ -15,6 +15,7 @@ const CHECK_LABELS = {
   zap: 'OWASP ZAP',
   tls: 'TLS',
   ports: 'Open ports',
+  image: 'Container image',
 }
 const STATUS_LABELS = {
   open: 'Open',

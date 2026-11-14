@@ -42,7 +42,7 @@ CHECK_LABELS = {"code": "Code flaws (Semgrep)", "deps": "Vulnerable dependencies
                 "web": "Web security checks", "nuclei": "Known vulnerabilities (Nuclei)",
                 "authz": "Access control comparison", "zap": "OWASP ZAP (crawl, passive)",
                 "zap_active": "OWASP ZAP active scan", "tls": "TLS protocols and ciphers",
-                "ports": "Open ports and services",
+                "ports": "Open ports and services", "image": "Container image (Trivy image)",
                 "ai": "AI review (Claude)"}
 SNIPPET_WIDTH = 100
 MAX_SNIPPET_LINES = 20
