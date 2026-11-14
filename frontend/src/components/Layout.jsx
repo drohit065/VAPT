@@ -35,6 +35,7 @@ export default function Layout() {
           {can(user, 'analyst') && <NavLink to="/scans/new">New scan</NavLink>}
           {can(user, 'admin') && <NavLink to="/users">Users</NavLink>}
           {can(user, 'admin') && <NavLink to="/audit">Audit log</NavLink>}
+          {can(user, 'admin') && <NavLink to="/settings">Settings</NavLink>}
         </nav>
         <div className="spacer" />
         {user && (

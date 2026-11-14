@@ -291,3 +291,19 @@ table.list select { width: auto; }
 .schedule-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
 .schedule-row select { font: inherit; padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--radius); background: #fff; }
 .sched-badge { display: inline-block; margin-left: 8px; font-size: 11px; padding: 1px 7px; border-radius: 10px; background: #e4f3ef; color: var(--teal); font-weight: 600; }
+
+/* ---------- Settings ---------- */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 16px; flex-wrap: wrap; }
+.tabs button { background: none; border: 0; padding: 10px 14px; font: inherit; color: var(--muted); cursor: pointer;
+  border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.tabs button.on { color: var(--teal); border-bottom-color: var(--teal); font-weight: 600; }
+.check-row { display: flex; gap: 10px; align-items: center; padding: 6px 0; cursor: pointer; }
+.check-row input { accent-color: var(--teal); }
+.inline-select { margin: 0 6px; font: inherit; padding: 2px 6px; border: 1px solid var(--border); border-radius: 6px; }
+.secret-row { display: flex; gap: 10px; align-items: center; }
+.secret-row input { flex: 1; }
+.field input, .field select { width: 100%; font: inherit; padding: 8px 10px; border: 1px solid var(--border);
+  border-radius: var(--radius); background: #fff; color: var(--text); }
+.pill { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 10px; margin-left: 6px; }
+.pill.ok { background: #e6f4ea; color: var(--ok); }
+.form-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 24px; }

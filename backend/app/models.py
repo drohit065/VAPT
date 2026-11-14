@@ -141,3 +141,14 @@ class AuditLog(Base):
     target: Mapped[str | None] = mapped_column(String(300), nullable=True)
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
     ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class AppSetting(Base):
+    """Admin settings. `value` holds non-secret JSON; `secret_enc` holds Fernet-encrypted JSON
+    (webhook URLs, passwords, API tokens) that is never returned by the API."""
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(60), primary_key=True)
+    value: Mapped[dict] = mapped_column(JSON, default=dict)
+    secret_enc: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

@@ -8,7 +8,7 @@ os.environ.update({
     "ADMIN_USERNAME": "admin",
     "ADMIN_PASSWORD": "builtin-admin-password-123",
     "JWT_SECRET": "x" * 40,
-    "TOKEN_ENCRYPTION_KEY": "",
+    "TOKEN_ENCRYPTION_KEY": "kL5f4pXJ0rZ3m2s3qF8m3b5xQ0rN3c2vY6h1t9u8w7E=",
 })
 
 
@@ -103,3 +103,21 @@ def test_logout_revokes_token(client):
     # a fresh login still works
     t2 = login(client, "admin", "builtin-admin-password-123").json()["access_token"]
     assert client.get("/api/projects", headers=hdr(t2)).status_code == 200
+
+
+def test_notification_settings_secrets_are_write_only(client):
+    admin = hdr(login(client, "admin", "builtin-admin-password-123").json()["access_token"])
+    body = {"enabled": True, "email_to": ["sec@example.com"], "smtp_host": "smtp.example.com",
+            "smtp_user": "mailer", "smtp_password": "super-secret-smtp-pw"}
+    r = client.put("/api/settings/notifications", headers=admin, json=body)
+    assert r.status_code == 200, r.text
+    got = client.get("/api/settings/notifications", headers=admin).json()
+    assert got["smtp_password_set"] is True and got["email_to"] == ["sec@example.com"]
+    assert "super-secret-smtp-pw" not in str(got)
+    # saving again without the password keeps it; 'clear' removes it
+    assert client.put("/api/settings/notifications", headers=admin, json={**body, "smtp_password": ""}).json()["smtp_password_set"]
+    assert not client.put("/api/settings/notifications", headers=admin,
+                          json={**body, "smtp_password": "", "clear": ["smtp_password"]}).json()["smtp_password_set"]
+    assert client.put("/api/settings/notifications", headers=admin, json={**body, "email_to": ["nope"]}).status_code == 400
+    assert client.put("/api/settings/notifications", headers=admin,
+                      json={**body, "slack_url": "http://insecure.example.com/x"}).status_code == 400

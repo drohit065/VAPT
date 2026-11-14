@@ -63,6 +63,7 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5-5}
       ZAP_URL: http://zap:8090
+      APP_URL: ${APP_URL:-}
       ZAP_API_KEY: ${ZAP_API_KEY:-}
     volumes:
       - uploads:/data/uploads

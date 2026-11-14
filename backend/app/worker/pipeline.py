@@ -38,6 +38,7 @@ from ..normalize import (
 from sqlalchemy import select
 
 from ..findings_mgmt import apply_history, open_counts
+from ..notifier import notify_scan
 from ..security import assert_public_registry, decrypt_token, parse_image_ref, scrub
 from . import dast
 from . import infra
@@ -597,5 +598,7 @@ def run_scan(scan_id: int) -> None:
             scan.upload_path = None
             scan.git_token_enc = None
             db.commit()
+            if scan.status in ("completed", "failed"):
+                notify_scan(db, scan)
         finally:
             db.close()
