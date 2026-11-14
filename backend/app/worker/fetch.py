@@ -4,6 +4,7 @@ import shutil
 import stat
 import subprocess
 import zipfile
+from urllib.parse import urlsplit
 
 from ..config import get_settings
 from ..security import assert_public_host, scrub, validate_branch, validate_git_url
@@ -61,9 +62,14 @@ def clone(url: str, branch: str | None, token: str | None, dest: str, home: str,
     s = get_settings()
     url = validate_git_url(url)
     branch = validate_branch(branch)
-    assert_public_host(url)  # re-check at clone time (DNS can change after submission)
+    ips = assert_public_host(url)  # re-check at clone time (DNS can change after submission)
+    parts = urlsplit(url)
+    # Pin git's connection to the address just validated, so a second DNS answer (DNS rebinding)
+    # cannot point the clone at an internal host.
+    pin = f"{parts.hostname}:{parts.port or 443}:{ips[0]}"
 
-    cmd = ["git", *GIT_SAFE_OPTS, "clone", "--single-branch", "--no-tags", "--no-recurse-submodules"]
+    cmd = ["git", *GIT_SAFE_OPTS, "-c", f"http.curloptResolve={pin}",
+           "clone", "--single-branch", "--no-tags", "--no-recurse-submodules"]
     if branch:
         cmd += ["--branch", branch]
     cmd += ["--", url, dest]

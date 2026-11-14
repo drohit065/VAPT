@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -142,7 +143,7 @@ async def create_scan(
     if source_type == "image":
         try:
             info = parse_image_ref(image_ref or "")
-            assert_public_registry(info)
+            await run_in_threadpool(assert_public_registry, info)
         except (ValidationError, ValueError) as e:
             raise HTTPException(400, str(e) or "Invalid image reference")
         user_, pass_ = (registry_user or "").strip(), (registry_password or "").strip()
@@ -170,7 +171,7 @@ async def create_scan(
         try:
             urls = validate_targets(target_urls)
             for u in urls:
-                assert_public_target(u)
+                await run_in_threadpool(assert_public_target, u)
             headers_a = parse_auth_headers(auth_a)
             headers_b = parse_auth_headers(auth_b)
             eps = validate_endpoints(endpoints, urls)
@@ -211,7 +212,7 @@ async def create_scan(
     if source_type == "git":
         try:
             url = validate_git_url(repo_url or "")
-            assert_public_host(url)
+            await run_in_threadpool(assert_public_host, url)
             br = validate_branch(branch)
         except (ValidationError, ValueError) as e:
             raise HTTPException(400, str(e) or "Invalid Git URL")

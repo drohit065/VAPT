@@ -53,17 +53,22 @@ def validate_git_url(url: str) -> str:
     return urlunsplit(("https", netloc, path, "", ""))
 
 
-def assert_public_host(url: str) -> None:
-    """Block clones from private, loopback, link-local (cloud metadata) and reserved ranges."""
+def assert_public_host(url: str) -> list[str]:
+    """Block clones from private, loopback, link-local (cloud metadata) and reserved ranges.
+    Returns the validated addresses so the caller can pin the connection to them."""
     host = urlsplit(url).hostname or ""
     try:
         infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
     except socket.gaierror:
         raise ValidationError(f"Could not resolve host {host}.")
+    ips: list[str] = []
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
         if not ip.is_global:
             raise ValidationError("The repository host resolves to a private or internal address.")
+        if str(ip) not in ips:
+            ips.append(str(ip))
+    return ips
 
 
 # ---------------------------------------------------------------- Live URL targets (DAST)

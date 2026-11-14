@@ -93,3 +93,13 @@ def test_unknown_user_and_bad_token(client):
     assert login(client, "nobody", "whatever-password").status_code == 401
     assert client.get("/api/projects", headers=hdr("not-a-jwt")).status_code == 401
     assert client.get("/api/projects").status_code == 401
+
+
+def test_logout_revokes_token(client):
+    t = login(client, "admin", "builtin-admin-password-123").json()["access_token"]
+    assert client.get("/api/projects", headers=hdr(t)).status_code == 200
+    assert client.post("/api/auth/logout", headers=hdr(t)).status_code == 200
+    assert client.get("/api/projects", headers=hdr(t)).status_code == 401
+    # a fresh login still works
+    t2 = login(client, "admin", "builtin-admin-password-123").json()["access_token"]
+    assert client.get("/api/projects", headers=hdr(t2)).status_code == 200

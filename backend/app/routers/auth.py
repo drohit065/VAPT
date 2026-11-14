@@ -9,6 +9,7 @@ from ..auth import (
     client_ip,
     create_token,
     record_failure,
+    revoke,
     require_user,
 )
 
@@ -33,6 +34,15 @@ def login(body: LoginIn, request: Request):
     audit(user.username, "login", ip=ip)
     return {"access_token": token, "token_type": "bearer", "expires_in": expires_in,
             "username": user.username, "role": user.role}
+
+
+@router.post("/logout")
+def logout(request: Request, user: CurrentUser = Depends(require_user)):
+    """Ends the session server-side (database users: all of their sessions)."""
+    auth_header = request.headers.get("authorization", "")
+    revoke(auth_header.split(" ", 1)[1] if " " in auth_header else "")
+    audit(user.username, "logout", ip=client_ip(request))
+    return {"ok": True}
 
 
 @router.get("/me")

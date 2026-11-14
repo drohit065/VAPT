@@ -316,15 +316,40 @@ def mask_assignments(text: str) -> str:
     return _ENV_RE.sub(lambda m: m.group(1) + "REDACTED", text)
 
 
+_SECRET_RULE = re.compile(r"secret|credential|password|passwd|token|api[-_.]?key|private[-_.]?key|"
+                          r"access[-_.]?key|hardcoded|leak", re.I)
+_QUOTED_ANY = re.compile(r"""(["'`])([^"'`\n]{8,})\1""")
+_LONG_TOKEN = re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9+/_\-.]{20,}={0,2}(?![A-Za-z0-9])")
+
+
+def mask_secret_snippet(text: str) -> str:
+    """For findings that are about a secret: hide every quoted literal and every long token,
+    whatever the variable is called (the scanner said there is a secret on these lines)."""
+    if not text:
+        return text
+    out = []
+    for line in text.splitlines():
+        prefix, sep, code = line.partition(" | ")
+        if not sep:
+            prefix, code = "", line
+        code = _QUOTED_ANY.sub(lambda m: m.group(1) + "REDACTED" + m.group(1), code)
+        code = _LONG_TOKEN.sub("REDACTED", code)
+        out.append(prefix + sep + code)
+    return "\n".join(out)
+
+
 def redact_findings(findings: list[dict], secrets: list[str]) -> None:
     """Mask secret values wherever they appear in any finding: exact values found by
-    Gitleaks, plus a heuristic for secret-looking assignments in snippets."""
+    Gitleaks, a heuristic for secret-looking assignments, and full masking of snippets of any
+    finding whose rule is about secrets (so secrets stay hidden even without Gitleaks)."""
     for f in findings:
         for field in ("snippet", "description", "title", "recommendation"):
             if f.get(field):
                 f[field] = redact(f[field], secrets)
         if f.get("snippet"):
             f["snippet"] = mask_assignments(f["snippet"])
+            if f.get("check") == "secrets" or _SECRET_RULE.search(f.get("rule_id") or ""):
+                f["snippet"] = mask_secret_snippet(f["snippet"])
 
 
 def _rule_label(rule: str) -> str:

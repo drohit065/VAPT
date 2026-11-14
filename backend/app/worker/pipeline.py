@@ -151,9 +151,30 @@ def _tail(text: str, n=300) -> str:
 # ---------------------------------------------------------------- checks
 
 
+SUPPRESSION_FILES = (".gitleaks.toml", ".gitleaksignore", ".semgrepignore")
+
+
+def neutralize_suppressions(root: str) -> list[str]:
+    """The scanned code must not be able to switch off or narrow our scanners (e.g. a .gitleaks.toml
+    allowlisting everything). Rename such files in the scan's temporary copy only; the original
+    repository / archive is never changed."""
+    found = []
+    for dirpath, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d != ".git"]
+        for name in files:
+            if name in SUPPRESSION_FILES:
+                full = os.path.join(dirpath, name)
+                if os.path.islink(full):
+                    continue
+                os.rename(full, os.path.join(dirpath, f".vapt-ignored{name}"))
+                found.append(os.path.relpath(full, root))
+    return sorted(found)
+
+
 def check_code(src, out_dir, home, budget):
     out = os.path.join(out_dir, "semgrep.json")
-    cmd = ["semgrep", "scan", "--config", "auto", "--json", "--output", out,
+    # --disable-nosem: '# nosemgrep' comments in the scanned code do not hide findings.
+    cmd = ["semgrep", "scan", "--config", "auto", "--json", "--output", out, "--disable-nosem",
            "--disable-version-check", "--timeout", "30", "--max-target-bytes", "2000000",
            "--jobs", "2", "--quiet", src]
     proc = run_tool(cmd, out_dir, home, budget)
@@ -187,8 +208,14 @@ def check_secrets(src, out_dir, home, budget, has_git: bool):
     mode = "git" if has_git else "dir"
     # Not --redact: the raw values are needed (in memory only) to mask them in every other
     # finding's snippet. The report file sits in the scan's temp folder, deleted at the end.
-    cmd = ["gitleaks", mode, "--report-format", "json", "--report-path", out,
-           "--exit-code", "0", "--no-banner", "--log-level", "error", src]
+    # Always the built-in rules, never a config from the scanned repository.
+    cfg = os.path.join(out_dir, "gitleaks-config.toml")
+    with open(cfg, "w") as fh:
+        fh.write("[extend]\nuseDefault = true\n")
+    ignore = os.path.join(out_dir, "gitleaks-empty-ignore")
+    open(ignore, "w").close()
+    cmd = ["gitleaks", mode, "--config", cfg, "--gitleaks-ignore-path", ignore, "--report-format", "json",
+           "--report-path", out, "--exit-code", "0", "--no-banner", "--log-level", "error", src]
     proc = run_tool(cmd, out_dir, home, budget)
     data = _load_json(out)
     if data is None:
@@ -445,6 +472,10 @@ def run_scan(scan_id: int) -> None:
 
         # 2. detect
         if not no_source:
+            ignored = neutralize_suppressions(scan_root)
+            if ignored:
+                notes.append("Scanner suppression files in the code were ignored so they cannot hide findings: "
+                             + ", ".join(ignored[:10]))
             steps.start("detect")
             found = detect_mod.detect(scan_root)
             scan.languages, scan.frameworks = found["languages"], found["frameworks"]

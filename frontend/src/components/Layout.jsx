@@ -14,7 +14,8 @@ export default function Layout() {
   useEffect(() => { setOpen(false) }, [location.pathname])
   useEffect(() => { api('/api/auth/me').then(setUser).catch(() => {}) }, [])
 
-  function logout() {
+  async function logout() {
+    try { await api('/api/auth/logout', { method: 'POST' }) } catch { /* already signed out */ }
     setToken(null)
     navigate('/login', { replace: true })
   }

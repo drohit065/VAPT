@@ -132,7 +132,8 @@ def create_token(user: CurrentUser) -> tuple[str, int]:
     s = get_settings()
     expires = s.jwt_expire_minutes * 60
     now = datetime.now(timezone.utc)
-    payload = {"sub": user.username, "role": user.role, "iat": now, "exp": now + timedelta(seconds=expires)}
+    payload = {"sub": user.username, "role": user.role, "iat": now, "exp": now + timedelta(seconds=expires),
+               "jti": os.urandom(12).hex()}
     if user.builtin:
         payload["bi"] = True
     else:
@@ -161,7 +162,7 @@ def require_user(creds: HTTPAuthorizationCredentials | None = Depends(_bearer)) 
         raise _unauthorized()
     sub = payload.get("sub")
     if payload.get("bi"):
-        if sub != s.admin_username:
+        if sub != s.admin_username or is_revoked(payload):
             raise _unauthorized()
         return CurrentUser(sub, "admin", builtin=True)
     from .models import User
@@ -205,3 +206,38 @@ def audit(username: str, action: str, target: str | None = None, detail: dict | 
     finally:
         if own:
             db.close()
+
+
+# ---------------------------------------------------------------- sign out
+
+_revoked: dict[str, float] = {}  # jti -> expiry (built-in admin tokens; DB users use token_version)
+
+
+def revoke(creds_token: str) -> None:
+    s = get_settings()
+    try:
+        payload = jwt.decode(creds_token, s.jwt_secret, algorithms=[ALGORITHM])
+    except jwt.PyJWTError:
+        return
+    if payload.get("bi"):
+        with _lock:
+            now = time.time()
+            for k in [k for k, exp in _revoked.items() if exp < now]:
+                del _revoked[k]
+            if payload.get("jti"):
+                _revoked[payload["jti"]] = float(payload.get("exp", now))
+        return
+    from .models import User
+
+    db = SessionLocal()
+    try:
+        u = db.scalar(select(User).where(User.username == payload.get("sub")))
+        if u:
+            u.token_version = (u.token_version or 0) + 1
+            db.commit()
+    finally:
+        db.close()
+
+
+def is_revoked(payload: dict) -> bool:
+    return bool(payload.get("jti")) and payload["jti"] in _revoked
