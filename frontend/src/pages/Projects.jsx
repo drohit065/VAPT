@@ -54,7 +54,10 @@ export default function Projects() {
                 return (
                   <tr key={p.id} className="clickable" onClick={() => open(p)}>
                     <td data-label="Project" className="cell-main">
-                      <div style={{ fontWeight: 600 }}>{p.name}</div>
+                      <div style={{ fontWeight: 600 }}>
+                        {p.name}
+                        {p.schedule && p.schedule !== 'none' && <span className="sched-badge">⟳ {p.schedule}</span>}
+                      </div>
                       <div className="mono muted" style={{ wordBreak: 'break-all' }}>{p.source}</div>
                     </td>
                     <td data-label="Last scan">

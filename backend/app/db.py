@@ -55,6 +55,10 @@ def init_db():
 MIGRATIONS = [
     "ALTER TABLE scans ADD COLUMN IF NOT EXISTS diff JSON",
     "ALTER TABLE scans ADD COLUMN IF NOT EXISTS options JSON",
+    "ALTER TABLE projects ADD COLUMN IF NOT EXISTS schedule VARCHAR(10) NOT NULL DEFAULT 'none'",
+    "ALTER TABLE projects ADD COLUMN IF NOT EXISTS schedule_hour INTEGER NOT NULL DEFAULT 2",
+    "ALTER TABLE projects ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ",
+    "ALTER TABLE projects ADD COLUMN IF NOT EXISTS schedule_config JSON",
     "ALTER TABLE findings ADD COLUMN IF NOT EXISTS fingerprint VARCHAR(64)",
     "CREATE INDEX IF NOT EXISTS ix_findings_fingerprint ON findings (fingerprint)",
     "ALTER TABLE findings ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'open'",

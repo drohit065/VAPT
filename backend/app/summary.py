@@ -45,4 +45,7 @@ def project_summary(p: Project) -> dict:
         "scan_count": len(scans),
         "latest_scan": scan_brief(latest) if latest else None,
         "latest_completed_scan": scan_brief(latest_done) if latest_done else None,
+        "schedule": p.schedule or "none",
+        "schedule_hour": p.schedule_hour if p.schedule_hour is not None else 2,
+        "next_run_at": p.next_run_at,
     }

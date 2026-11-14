@@ -11,6 +11,7 @@ from sqlalchemy.exc import OperationalError
 from ..db import SessionLocal, init_db
 from ..findings_mgmt import fingerprint
 from ..models import Finding, Scan
+from ..schedules import enqueue_due
 from .pipeline import WORK_ROOT, run_scan
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -81,7 +82,20 @@ def main() -> None:
     recover()
     backfill_fingerprints()
     log.info("worker ready")
+    last_schedule_check = 0.0
     while True:
+        if time.monotonic() - last_schedule_check > 60:
+            last_schedule_check = time.monotonic()
+            try:
+                db = SessionLocal()
+                try:
+                    queued = enqueue_due(db)
+                finally:
+                    db.close()
+                if queued:
+                    log.info("queued scheduled scan(s): %s", queued)
+            except OperationalError:
+                pass
         try:
             scan_id = claim_next()
         except OperationalError:

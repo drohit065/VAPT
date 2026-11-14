@@ -288,3 +288,6 @@ table.list select { width: auto; }
 .nowrap { white-space: nowrap; }
 .tag.act-login_failed { background: #fbe9eb; color: var(--crit); }
 @media (max-width: 760px) { .grid3 { grid-template-columns: 1fr; } .row-actions { white-space: normal; } }
+.schedule-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.schedule-row select { font: inherit; padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--radius); background: #fff; }
+.sched-badge { display: inline-block; margin-left: 8px; font-size: 11px; padding: 1px 7px; border-radius: 10px; background: #e4f3ef; color: var(--teal); font-weight: 600; }

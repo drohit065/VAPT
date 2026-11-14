@@ -147,6 +147,63 @@ function Finding({ f, open, onToggle, onSaved, canEdit }) {
   )
 }
 
+function ScheduleCard({ project, canEdit, onSaved }) {
+  const [schedule, setSchedule] = useState(project.schedule || 'none')
+  const [hour, setHour] = useState(project.schedule_hour ?? 2)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const dirty = schedule !== (project.schedule || 'none') || Number(hour) !== (project.schedule_hour ?? 2)
+
+  if (project.source_type === 'zip') return null
+
+  async function save() {
+    setBusy(true); setErr('')
+    try {
+      const p = await api(`/api/projects/${project.id}/schedule`, {
+        method: 'PUT', body: { schedule, hour_utc: Number(hour) },
+      })
+      onSaved({ ...project, ...p })
+    } catch (e) { setErr(e.message) } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="card schedule-card">
+      <div className="schedule-row">
+        <strong>Scheduled re-scan</strong>
+        {canEdit ? (
+          <>
+            <select value={schedule} onChange={e => setSchedule(e.target.value)} aria-label="Schedule">
+              <option value="none">Off</option>
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+            </select>
+            {schedule !== 'none' && (
+              <label className="small">at{' '}
+                <select value={hour} onChange={e => setHour(e.target.value)} aria-label="Hour (UTC)">
+                  {Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{String(h).padStart(2, '0')}:00</option>)}
+                </select>{' '}UTC
+              </label>
+            )}
+            <button type="button" className="btn small-btn" onClick={save} disabled={busy || !dirty}>
+              {busy ? 'Saving…' : 'Save'}
+            </button>
+          </>
+        ) : (
+          <span>{project.schedule === 'none' ? 'Off' : `${project.schedule} at ${String(project.schedule_hour).padStart(2, '0')}:00 UTC`}</span>
+        )}
+        {project.next_run_at && project.schedule !== 'none' && (
+          <span className="small muted">Next run: {fmtTime(project.next_run_at)}</span>
+        )}
+      </div>
+      {err && <div className="error small" style={{ marginTop: 8 }}>{err}</div>}
+      <div className="small muted" style={{ marginTop: 6 }}>
+        Repeats this project's latest scan settings. Access tokens and login headers are never stored, so scheduled
+        scans of private repositories or authenticated pages need a manual scan.
+      </div>
+    </div>
+  )
+}
+
 function DiffCard({ diff }) {
   const [showFixed, setShowFixed] = useState(false)
   if (!diff?.previous_scan_id) {
@@ -190,6 +247,7 @@ export default function ScanReport() {
   const [view, setView] = useState('open')
   const [open, setOpen] = useState({})
   const [history, setHistory] = useState([])
+  const [project, setProject] = useState(null)
   const [busy, setBusy] = useState('')
   const [dlError, setDlError] = useState('')
 
@@ -198,7 +256,7 @@ export default function ScanReport() {
     Promise.all([api(`/api/scans/${id}`), api(`/api/scans/${id}/findings`)])
       .then(([s, f]) => {
         setScan(s); setFindings(f)
-        return api(`/api/projects/${s.project.id}`).then(p => setHistory(p.scans || []))
+        return api(`/api/projects/${s.project.id}`).then(p => { setHistory(p.scans || []); setProject(p) })
       })
       .catch(e => setError(e.message))
   }, [id])
@@ -298,6 +356,7 @@ export default function ScanReport() {
       </div>
 
       <DiffCard diff={scan.diff} />
+      {project && <ScheduleCard project={project} canEdit={can(user, 'analyst')} onSaved={setProject} />}
 
       <div className="card report-summary">
         <div>

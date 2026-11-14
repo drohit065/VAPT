@@ -25,10 +25,17 @@ class Project(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
-    source_type: Mapped[str] = mapped_column(String(10))  # "git" | "zip"
-    # Git URL without credentials, or the zip file name.
+    source_type: Mapped[str] = mapped_column(String(10))  # "git" | "zip" | "url" | "image"
+    # Git URL without credentials, the zip file name, target URLs (one per line) or an image reference.
     source: Mapped[str] = mapped_column(String(1000), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    # Scheduled re-scans: none | daily | weekly, at schedule_hour (UTC).
+    schedule: Mapped[str] = mapped_column(String(10), default="none")
+    schedule_hour: Mapped[int] = mapped_column(Integer, default=2)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Non-secret copy of the scan settings to repeat: {"checks", "branch", "options"}.
+    schedule_config: Mapped[dict] = mapped_column(JSON, default=dict)
 
     scans: Mapped[list["Scan"]] = relationship(
         back_populates="project", cascade="all, delete-orphan", order_by="Scan.id.desc()"
