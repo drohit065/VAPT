@@ -52,7 +52,7 @@ class Zap:
                 return json.loads(r.read().decode("utf-8", "replace") or "{}")
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", "replace")[:300]
-            raise ZapError(f"ZAP API {component}/{name} failed: HTTP {e.code} {body}")
+            raise ZapError(f"ZAP API {component}/{operation} failed: HTTP {e.code} {body}")
         except (urllib.error.URLError, OSError) as e:
             raise ZapError(f"Cannot reach ZAP at {self.base}: {e}")
 
