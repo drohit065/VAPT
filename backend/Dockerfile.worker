@@ -20,6 +20,11 @@ COPY --from=trivy /usr/local/bin/trivy /usr/local/bin/trivy
 COPY --from=gitleaks /usr/bin/gitleaks /usr/local/bin/gitleaks
 COPY --from=nuclei /usr/local/bin/nuclei /usr/local/bin/nuclei
 
+# nmap for TLS cipher enumeration and port scans (unprivileged TCP connect scans only).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends nmap \
+ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

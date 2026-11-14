@@ -38,6 +38,7 @@ from sqlalchemy import select
 from ..findings_mgmt import apply_history, open_counts
 from ..security import decrypt_token, scrub
 from . import dast
+from . import infra
 from . import zap as zap_mod
 from . import detect as detect_mod
 from .fetch import FetchError, clone, extract_zip, remove_tree, single_top_dir
@@ -54,6 +55,8 @@ CHECK_STEPS = [
     ("iac", "Docker and Terraform files (Trivy config)"),
     ("web", "Web security checks (headers, TLS, cookies, CORS, exposed files)"),
     ("nuclei", "Known vulnerabilities and misconfigurations (Nuclei)"),
+    ("tls", "TLS protocols and ciphers (nmap)"),
+    ("ports", "Open ports and exposed services (nmap)"),
     ("zap", "OWASP ZAP: crawl, passive scan and OpenAPI import"),
     ("authz", "Access control (no login / user A / user B)"),
     ("ai", "AI review (Claude)"),
@@ -395,6 +398,11 @@ def run_scan(scan_id: int) -> None:
                 budget, skip_covered=bool(checks.get("web")), scan_id=scan.id)
             notes.extend(zap_notes)
             return found, detail
+
+        def run_ports():
+            found, detail, port_notes = infra.run_ports(targets, out_dir, home, budget, run_tool)
+            notes.extend(port_notes)
+            return found, detail
         runners = {
             "code": lambda: check_code(scan_root, out_dir, home, budget()),
             "deps": lambda: check_deps(scan_root, out_dir, home, budget()),
@@ -404,6 +412,8 @@ def run_scan(scan_id: int) -> None:
                 dast.run_web_checks(targets, budget, auth_a)),
             "nuclei": lambda: check_nuclei([t.url for t in targets], out_dir, home, budget(), auth_a),
             "zap": lambda: run_zap(),
+            "tls": lambda: infra.run_tls(targets, out_dir, home, budget, run_tool),
+            "ports": lambda: run_ports(),
             "authz": lambda: dast.run_authz(
                 (scan.options or {}).get("endpoints") or (spec_endpoints + [t.url for t in targets])[:50],
                 {urlsplit(t.url).netloc: t.ip for t in targets},

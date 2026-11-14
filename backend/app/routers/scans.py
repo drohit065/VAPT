@@ -40,6 +40,8 @@ CHECKS = {
     "iac": "Docker and Terraform files (Trivy config)",
     "web": "Web security checks: headers, TLS, cookies, CORS, exposed files",
     "nuclei": "Known vulnerabilities and misconfigurations (Nuclei templates)",
+    "tls": "TLS protocols and cipher suites (nmap ssl-enum-ciphers)",
+    "ports": "Open ports and exposed services: ~1,300 TCP ports incl. databases, Redis, Docker, Kubernetes (nmap). Skipped behind a CDN",
     "zap": "OWASP ZAP: crawl + passive scan, imports Swagger/OpenAPI automatically",
     "zap_active": "OWASP ZAP active scan: sends attack payloads (SQL injection, XSS, path traversal...). "
                   "Staging only; can create data or trigger alerts",
@@ -47,11 +49,11 @@ CHECKS = {
     "ai": "AI review (Claude)",
 }
 DEFAULT_CHECKS = {"code": True, "deps": True, "secrets": True, "iac": True,
-                  "web": True, "nuclei": True, "zap": True, "zap_active": False, "authz": True, "ai": False}
+                  "web": True, "nuclei": True, "tls": True, "ports": False, "zap": True, "zap_active": False, "authz": True, "ai": False}
 CODE_SOURCES = ["git", "zip"]
 # Which inputs each check applies to.
 CHECK_SOURCES = {"code": CODE_SOURCES, "deps": CODE_SOURCES, "secrets": CODE_SOURCES, "iac": CODE_SOURCES,
-                 "ai": CODE_SOURCES, "web": ["url"], "nuclei": ["url"], "zap": ["url"], "zap_active": ["url"],
+                 "ai": CODE_SOURCES, "web": ["url"], "nuclei": ["url"], "zap": ["url"], "zap_active": ["url"], "tls": ["url"], "ports": ["url"],
                  "authz": ["url"]}
 
 

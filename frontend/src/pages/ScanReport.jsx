@@ -12,6 +12,8 @@ const CHECK_LABELS = {
   nuclei: 'Nuclei',
   authz: 'Access control',
   zap: 'OWASP ZAP',
+  tls: 'TLS',
+  ports: 'Open ports',
 }
 const STATUS_LABELS = {
   open: 'Open',
