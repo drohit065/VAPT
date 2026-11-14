@@ -54,6 +54,7 @@ def init_db():
 # databases get new columns here (idempotent).
 MIGRATIONS = [
     "ALTER TABLE scans ADD COLUMN IF NOT EXISTS diff JSON",
+    "ALTER TABLE scans ADD COLUMN IF NOT EXISTS options JSON",
     "ALTER TABLE findings ADD COLUMN IF NOT EXISTS fingerprint VARCHAR(64)",
     "CREATE INDEX IF NOT EXISTS ix_findings_fingerprint ON findings (fingerprint)",
     "ALTER TABLE findings ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'open'",

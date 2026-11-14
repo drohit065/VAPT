@@ -9,6 +9,7 @@ The analysis functions (`*_findings`) are pure and unit tested; `fetch` does the
 """
 from __future__ import annotations
 
+import difflib
 import http.client
 import re
 import socket
@@ -449,7 +450,7 @@ class Target:
     tls: dict | None
 
 
-def probe(url: str) -> Target:
+def probe(url: str, auth: dict | None = None) -> Target:
     """Validate, resolve (public only) and fetch the target once. Raises TargetError."""
     try:
         ip = assert_public_target(url)[0]
@@ -458,14 +459,15 @@ def probe(url: str) -> Target:
     try:
         tls = tls_info(url, ip) if url.startswith("https://") else None
         verify = not (tls and not tls.get("valid"))
-        resp = fetch(url, ip, verify=verify)
+        resp = fetch(url, ip, headers=auth, verify=verify)
     except (OSError, http.client.HTTPException, ssl.SSLError) as e:
         raise TargetError(f"{url} is not reachable: {e.__class__.__name__}: {str(e)[:200]}")
     return Target(url, ip, verify, resp, tls)
 
 
-def run_web_checks(targets: list[Target], time_left) -> list[dict]:
+def run_web_checks(targets: list[Target], time_left, auth: dict | None = None) -> list[dict]:
     findings: list[dict] = []
+    auth = auth or {}
 
     def safe(fn, *a, **kw):
         if time_left() < 15:
@@ -487,10 +489,10 @@ def run_web_checks(targets: list[Target], time_left) -> list[dict]:
             https_url = urlunsplit(("https", f"[{host}]" if ":" in host else host, "/", "", ""))
             https_ok = safe(fetch, https_url, t.ip, verify=False) is not None
             findings += transport_findings(t.url, t.resp, https_ok)
-        r = safe(fetch, t.url, t.ip, headers={"Origin": CORS_PROBE_ORIGIN}, verify=t.verify)
+        r = safe(fetch, t.url, t.ip, headers={**auth, "Origin": CORS_PROBE_ORIGIN}, verify=t.verify)
         if r:
             findings += cors_findings(t.url, r)
-        r = safe(fetch, t.url, t.ip, method="TRACE", verify=t.verify)
+        r = safe(fetch, t.url, t.ip, method="TRACE", verify=t.verify)  # never sends credentials
         if r:
             findings += trace_findings(t.url, r)
 
@@ -511,3 +513,101 @@ def run_web_checks(targets: list[Target], time_left) -> list[dict]:
                 docs.append(path)
         findings += api_docs_finding(origin, docs)
     return findings
+
+
+# ---------------------------------------------------------------- access control (authz)
+
+PUBLIC_HINT = re.compile(r"/(swagger|openapi|api-docs|health|status|ping|version|favicon|robots\.txt|static|assets|public)\b",
+                         re.I)
+
+
+def similar(a: bytes, b: bytes) -> bool:
+    """True when two response bodies are (nearly) the same content."""
+    if a == b:
+        return True
+    if not a or not b:
+        return False
+    la, lb = len(a), len(b)
+    if min(la, lb) / max(la, lb) < 0.9:
+        return False
+    sa, sb = a[:20000].decode("utf-8", "replace"), b[:20000].decode("utf-8", "replace")
+    sm = difflib.SequenceMatcher(None, sa, sb, autojunk=False)
+    return sm.quick_ratio() >= 0.95 and sm.ratio() >= 0.95
+
+
+def _ok(r: Resp | None) -> bool:
+    return r is not None and 200 <= r.status < 300
+
+
+def _meaningful(r: Resp) -> bool:
+    """A body worth protecting: not empty and not an obvious login / error page."""
+    body = r.body.strip()
+    if len(body) < 20:
+        return False
+    low = body[:3000].lower()
+    return not (b'type="password"' in low or b"sign in" in low or b"log in" in low and b"<form" in low)
+
+
+def authz_findings(url: str, ra: Resp | None, rn: Resp | None, rb: Resp | None) -> list[dict]:
+    """ra: as user A, rn: without credentials, rb: as user B (or None)."""
+    if not _ok(ra) or not _meaningful(ra):
+        return []
+    out = []
+    public_hint = bool(PUBLIC_HINT.search(urlsplit(url).path))
+    if _ok(rn) and similar(ra.body, rn.body):
+        out.append(_finding(
+            "Low" if public_hint else "High", "authz-no-auth",
+            "Endpoint returns the same data without authentication", url,
+            f"GET {url}\n  as user A       -> HTTP {ra.status}, {len(ra.body)} bytes\n"
+            f"  no credentials  -> HTTP {rn.status}, {len(rn.body)} bytes (same content)",
+            "The endpoint answered an unauthenticated request with the same content it returns to an "
+            "authenticated user. Verify whether it is meant to be public.",
+            "Anyone on the internet can read this data without logging in.",
+            "Require authentication on this route (deny by default) and add an automated test that "
+            "calls it without credentials and expects 401/403.",
+            "CWE-306", "A01:2021 - Broken Access Control"))
+    elif rb is not None and _ok(rb) and similar(ra.body, rb.body):
+        out.append(_finding(
+            "Medium" if public_hint else "High", "authz-cross-user",
+            "Possible broken access control: user B receives user A's data", url,
+            f"GET {url}\n  as user A -> HTTP {ra.status}, {len(ra.body)} bytes\n"
+            f"  as user B -> HTTP {rb.status}, {len(rb.body)} bytes (same content)\n"
+            f"  no credentials -> HTTP {rn.status if rn else 'error'}",
+            "User B received the same response as user A for this endpoint. If the endpoint returns data "
+            "that belongs to user A (an IDOR / horizontal privilege escalation), user B should have been "
+            "refused. Shared data (e.g. a product catalogue) is expected to match: verify before fixing.",
+            "An attacker with any account changes an ID in the URL to read (and possibly modify) other "
+            "users' records.",
+            "Check on the server that the logged-in user owns or may access the requested object on every "
+            "request; never rely on IDs being hard to guess.",
+            "CWE-639", "A01:2021 - Broken Access Control"))
+    return out
+
+
+def run_authz(endpoints: list[str], ips: dict[str, str], verify: dict[str, bool], time_left,
+              auth_a: dict, auth_b: dict | None) -> tuple[list[dict], str]:
+    findings, tested, skipped = [], 0, 0
+    for url in endpoints:
+        if time_left() < 15:
+            raise TimeoutError("Access control checks exceeded the time limit")
+        host = urlsplit(url).netloc
+        ip, ver = ips.get(host), verify.get(host, True)
+        if not ip:
+            skipped += 1
+            continue
+
+        def get(headers):
+            try:
+                return fetch(url, ip, headers=headers, verify=ver)
+            except (OSError, http.client.HTTPException, ssl.SSLError):
+                return None
+        ra = get(auth_a)
+        if not _ok(ra):
+            skipped += 1
+            continue
+        tested += 1
+        findings += authz_findings(url, ra, get(None), get(auth_b) if auth_b else None)
+    detail = f"{len(findings)} issue(s); {tested} endpoint(s) compared"
+    if skipped:
+        detail += f", {skipped} skipped (not 2xx as user A or unreachable)"
+    return findings, detail

@@ -270,3 +270,5 @@ tr.current td { background: #eef5f6; }
 .fixed-list { list-style: none; padding: 0; margin: 12px 0 0; }
 .fixed-list li { padding: 6px 0; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .report-filters + .report-filters { margin-top: -4px; }
+.auth-box { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+.auth-toggle { color: var(--teal); font-weight: 600; padding: 0; }

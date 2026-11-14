@@ -141,6 +141,54 @@ def assert_public_target(url: str) -> list[str]:
     return ips
 
 
+_HEADER_NAME = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+_FORBIDDEN_HEADERS = {"host", "content-length", "transfer-encoding", "connection", "upgrade", "te",
+                      "proxy-authorization", "expect"}
+MAX_ENDPOINTS = 50
+
+
+def parse_auth_headers(raw: str | None) -> dict[str, str]:
+    """'Name: value' per line -> dict. Used for authenticated scanning (e.g. Authorization, Cookie)."""
+    headers: dict[str, str] = {}
+    for line in (raw or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if ":" not in line:
+            raise ValidationError("Each authentication line must look like 'Header-Name: value'.")
+        name, value = (x.strip() for x in line.split(":", 1))
+        if not _HEADER_NAME.match(name) or name.lower() in _FORBIDDEN_HEADERS:
+            raise ValidationError(f"Header name not allowed: {name[:64]}")
+        if not value or len(value) > 8000 or any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
+            raise ValidationError(f"Invalid value for header {name}.")
+        headers[name] = value
+    if len(headers) > 5:
+        raise ValidationError("Use at most 5 authentication headers per user.")
+    return headers
+
+
+def validate_endpoints(raw: str | None, targets: list[str]) -> list[str]:
+    """Endpoints for the access-control check: full URLs or paths relative to the first target.
+    Every endpoint must be on one of the target hosts (the operator confirmed authorisation for those)."""
+    hosts = {urlsplit(t).netloc for t in targets}
+    base = urlsplit(targets[0])
+    out: list[str] = []
+    for item in re.split(r"[\n,]", raw or ""):
+        item = item.strip()
+        if not item:
+            continue
+        if item.startswith("/"):
+            item = urlunsplit((base.scheme, base.netloc, "", "", "")) + item
+        url = validate_target_url(item)
+        if urlsplit(url).netloc not in hosts:
+            raise ValidationError(f"Endpoint is not on one of the target hosts: {item[:100]}")
+        if url not in out:
+            out.append(url)
+    if len(out) > MAX_ENDPOINTS:
+        raise ValidationError(f"Use at most {MAX_ENDPOINTS} endpoints.")
+    return out
+
+
 def target_project_name(urls: list[str]) -> str:
     first = urlsplit(urls[0]).hostname or "website"
     return first if len(urls) == 1 else f"{first} (+{len(urls) - 1})"

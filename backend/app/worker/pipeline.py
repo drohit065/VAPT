@@ -15,6 +15,8 @@ import tempfile
 import time
 from datetime import datetime, timezone
 
+from urllib.parse import urlsplit
+
 from sqlalchemy.orm.attributes import flag_modified
 
 from ..config import get_settings
@@ -51,6 +53,7 @@ CHECK_STEPS = [
     ("iac", "Docker and Terraform files (Trivy config)"),
     ("web", "Web security checks (headers, TLS, cookies, CORS, exposed files)"),
     ("nuclei", "Known vulnerabilities and misconfigurations (Nuclei)"),
+    ("authz", "Access control (no login / user A / user B)"),
     ("ai", "AI review (Claude)"),
 ]
 NUCLEI_TEMPLATES = os.path.join(CACHE_DIR, "nuclei-templates")
@@ -226,7 +229,7 @@ def ensure_nuclei_templates(out_dir, home, budget) -> str:
     raise RuntimeError(f"Could not download Nuclei templates: {err}")
 
 
-def check_nuclei(urls, out_dir, home, budget):
+def check_nuclei(urls, out_dir, home, budget, auth: dict | None = None):
     started = time.monotonic()
     note = ensure_nuclei_templates(out_dir, home, budget)
     budget -= time.monotonic() - started
@@ -243,6 +246,13 @@ def check_nuclei(urls, out_dir, home, budget):
            "-duc", "-nc", "-silent", "-or", "-jsonl", "-o", out,
            "-timeout", "10", "-retries", "1", "-rl", "30", "-c", "10", "-bs", "10",
            "-H", f"User-Agent: {dast.USER_AGENT}"]
+    if auth:
+        # Credentials go through a 0600 file, never on the command line.
+        hdr_file = os.path.join(out_dir, "auth-headers.txt")
+        fd = os.open(hdr_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write("".join(f"{k}: {v}\n" for k, v in auth.items()))
+        cmd += ["-H", hdr_file]
     timed_out = False
     proc = None
     try:
@@ -286,6 +296,9 @@ def run_scan(scan_id: int) -> None:
     for d in (src_dir, out_dir, home):
         os.makedirs(d, mode=0o700)
     token = None
+    auth_a: dict = {}
+    auth_b: dict = {}
+    secret_values_auth: list[str] = []
     deadline = time.monotonic() + s.scan_timeout_seconds
     steps = Steps(db, scan)
     notes = list(scan.notes or [])
@@ -320,10 +333,16 @@ def run_scan(scan_id: int) -> None:
             steps.finish("fetch", detail=f"Cloned {info['branch'] or 'default branch'} @ {(info['commit'] or '')[:12]}")
         elif is_url:
             steps.start("fetch", "Resolving and connecting to targets")
+            if scan.git_token_enc:
+                creds = json.loads(decrypt_token(scan.git_token_enc))
+                auth_a, auth_b = creds.get("a") or {}, creds.get("b") or {}
+                secret_values_auth = [v for h in (auth_a, auth_b) for v in h.values()]
+                scan.git_token_enc = None  # wiped from the database right away; kept in memory only
+                db.commit()
             targets = []
             for u in project.source.splitlines():
                 try:
-                    targets.append(dast.probe(u))
+                    targets.append(dast.probe(u, auth_a))
                 except dast.TargetError as e:
                     notes.append(f"Skipped target: {e}")
             if not targets:
@@ -364,8 +383,13 @@ def run_scan(scan_id: int) -> None:
             "secrets": lambda: check_secrets(scan_root, out_dir, home, budget(), has_git),
             "iac": lambda: check_iac(scan_root, out_dir, home, budget()),
             "web": lambda: (lambda f: (f, f"{len(f)} issue(s) on {len(targets)} target(s)"))(
-                dast.run_web_checks(targets, budget)),
-            "nuclei": lambda: check_nuclei([t.url for t in targets], out_dir, home, budget()),
+                dast.run_web_checks(targets, budget, auth_a)),
+            "nuclei": lambda: check_nuclei([t.url for t in targets], out_dir, home, budget(), auth_a),
+            "authz": lambda: dast.run_authz(
+                (scan.options or {}).get("endpoints") or [t.url for t in targets],
+                {urlsplit(t.url).netloc: t.ip for t in targets},
+                {urlsplit(t.url).netloc: t.verify for t in targets},
+                budget, auth_a, auth_b or None),
         }
         for key, _label in CHECK_STEPS:
             if not checks.get(key):
@@ -385,14 +409,14 @@ def run_scan(scan_id: int) -> None:
                 steps.finish(key, "failed", str(e))
                 notes.append(f"{_label} did not finish: {e}. Results may be incomplete.")
             except Exception as e:  # one scanner failing must not lose the others
-                msg = scrub(str(e))[:500]
+                msg = scrub(str(e), *secret_values_auth)[:500]
                 log.warning("scan %s: check %s failed: %s", scan_id, key, msg)
                 steps.finish(key, "failed", msg)
                 notes.append(f"{_label} failed: {msg}")
 
         # 4. report
         steps.start("report")
-        redact_findings(all_findings, secrets)
+        redact_findings(all_findings, secrets + sorted(secret_values_auth, key=len, reverse=True))
         secrets = []
         final = dedupe(all_findings)
         previous = db.scalars(
@@ -417,7 +441,7 @@ def run_scan(scan_id: int) -> None:
         log.info("scan %s completed with %s findings", scan_id, len(final))
     except Exception as e:
         db.rollback()
-        msg = scrub(str(e), token)[:1000] or e.__class__.__name__
+        msg = scrub(str(e), token, *secret_values_auth)[:1000] or e.__class__.__name__
         log.warning("scan %s failed: %s", scan_id, msg)
         scan = db.get(Scan, scan_id)
         steps.scan = scan
@@ -429,6 +453,7 @@ def run_scan(scan_id: int) -> None:
         db.commit()
     finally:
         token = None
+        auth_a, auth_b, secret_values_auth = {}, {}, []
         remove_tree(workdir)
         try:
             scan = db.get(Scan, scan_id)

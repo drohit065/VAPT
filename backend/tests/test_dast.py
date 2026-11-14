@@ -202,3 +202,65 @@ def test_parse_nuclei():
     assert f["owasp"].startswith("A01")
     assert "root:x:0:0:root:/root:/bin/bash" not in f["snippet"]  # long extracted values are truncated
     assert f["file_path"].startswith("https://a.example.com/")
+
+
+# ---------------------------------------------------------------- authenticated scanning / access control
+
+from app.security import parse_auth_headers, validate_endpoints  # noqa: E402
+from app.worker.dast import authz_findings, similar  # noqa: E402
+
+
+def test_parse_auth_headers():
+    h = parse_auth_headers("Authorization: Bearer abc.def\n\nCookie: s=1; t=2\n")
+    assert h == {"Authorization": "Bearer abc.def", "Cookie": "s=1; t=2"}
+    for bad in ("NoColonHere", "Host: evil.example", "Bad Name: x", "X-A: line\rinjection",
+                "\n".join(f"X-H{i}: v" for i in range(6))):
+        with pytest.raises(ValidationError):
+            parse_auth_headers(bad)
+    assert parse_auth_headers("") == {}
+
+
+def test_validate_endpoints_same_host_only():
+    targets = ["https://api.example.com/", "https://app.example.com/"]
+    eps = validate_endpoints("/api/me\nhttps://app.example.com/orders/1\n/api/me", targets)
+    assert eps == ["https://api.example.com/api/me", "https://app.example.com/orders/1"]
+    with pytest.raises(ValidationError):
+        validate_endpoints("https://other.example.org/x", targets)
+
+
+def _json(body, status=200):
+    return Resp("https://api.example.com/api/orders/1", status, [("content-type", "application/json")], body)
+
+
+ORDER = b'{"id": 1, "owner": "alice", "items": [{"sku": "A1", "qty": 2}], "address": "1 Main St"}'
+
+
+def test_authz_no_auth_access_is_high():
+    f = authz_findings("https://api.example.com/api/orders/1", _json(ORDER), _json(ORDER), None)
+    assert len(f) == 1 and f[0]["severity"] == "High" and f[0]["cwe"] == "CWE-306"
+
+
+def test_authz_cross_user_idor():
+    f = authz_findings("https://api.example.com/api/orders/1", _json(ORDER), _json(b'{"error":"unauthorized"}', 401),
+                       _json(ORDER))
+    assert len(f) == 1 and f[0]["rule_id"] == "web.authz-cross-user" and f[0]["cwe"] == "CWE-639"
+
+
+def test_authz_properly_protected():
+    assert authz_findings("https://api.example.com/api/orders/1", _json(ORDER), _json(b"{}", 401),
+                          _json(b'{"error":"forbidden"}', 403)) == []
+    # user B gets their own, different data: fine
+    other = b'{"id": 2, "owner": "bob", "items": [{"sku": "Z9", "qty": 7}], "address": "9 Elm Rd"}'
+    assert authz_findings("https://api.example.com/api/orders/1", _json(ORDER), _json(b"{}", 401), _json(other)) == []
+
+
+def test_authz_public_paths_are_downgraded():
+    url = "https://api.example.com/health"
+    r = Resp(url, 200, [], b'{"status": "UP", "components": {"db": "UP", "disk": "UP"}}')
+    assert authz_findings(url, r, r, None)[0]["severity"] == "Low"
+
+
+def test_similar():
+    assert similar(ORDER, ORDER)
+    assert similar(ORDER, ORDER.replace(b"1 Main St", b"1 Main Sx"))
+    assert not similar(ORDER, b'{"error": "forbidden"}')

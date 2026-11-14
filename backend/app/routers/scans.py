@@ -21,8 +21,10 @@ from ..security import (
     canonical_repo_source,
     encrypt_token,
     project_name_from_url,
+    parse_auth_headers,
     target_project_name,
     validate_branch,
+    validate_endpoints,
     validate_git_url,
     validate_targets,
 )
@@ -38,14 +40,15 @@ CHECKS = {
     "iac": "Docker and Terraform files (Trivy config)",
     "web": "Web security checks: headers, TLS, cookies, CORS, exposed files",
     "nuclei": "Known vulnerabilities and misconfigurations (Nuclei templates)",
+    "authz": "Access control: compare no login / user A / user B (needs authentication below)",
     "ai": "AI review (Claude)",
 }
 DEFAULT_CHECKS = {"code": True, "deps": True, "secrets": True, "iac": True,
-                  "web": True, "nuclei": True, "ai": False}
+                  "web": True, "nuclei": True, "authz": True, "ai": False}
 CODE_SOURCES = ["git", "zip"]
 # Which inputs each check applies to.
 CHECK_SOURCES = {"code": CODE_SOURCES, "deps": CODE_SOURCES, "secrets": CODE_SOURCES, "iac": CODE_SOURCES,
-                 "ai": CODE_SOURCES, "web": ["url"], "nuclei": ["url"]}
+                 "ai": CODE_SOURCES, "web": ["url"], "nuclei": ["url"], "authz": ["url"]}
 
 
 @router.get("/meta")
@@ -101,6 +104,9 @@ async def create_scan(
     token: str | None = Form(None),
     target_urls: str | None = Form(None),
     authorized: str | None = Form(None),
+    auth_a: str | None = Form(None),
+    auth_b: str | None = Form(None),
+    endpoints: str | None = Form(None),
     checks: str | None = Form(None),
     file: UploadFile | None = File(None),
     db: Session = Depends(get_db),
@@ -117,14 +123,35 @@ async def create_scan(
             urls = validate_targets(target_urls)
             for u in urls:
                 assert_public_target(u)
+            headers_a = parse_auth_headers(auth_a)
+            headers_b = parse_auth_headers(auth_b)
+            eps = validate_endpoints(endpoints, urls)
         except (ValidationError, ValueError) as e:
             raise HTTPException(400, str(e) or "Invalid URL")
+        if headers_b and not headers_a:
+            raise HTTPException(400, "Enter user A's authentication before user B's.")
         source = "\n".join(urls)
         if len(source) > 1000:
             raise HTTPException(400, "The URLs are too long in total (1000 characters max).")
+        if check_cfg.get("authz") and not headers_a:
+            check_cfg["authz"] = False
+            notes.append("Access control check skipped: it needs user A's authentication headers.")
+            if not any(check_cfg.values()):
+                raise HTTPException(400, "Switch on at least one check.")
+        creds_enc = None
+        if headers_a:
+            try:
+                creds_enc = encrypt_token(json.dumps({"a": headers_a, "b": headers_b}))
+            except RuntimeError:
+                raise HTTPException(500, "Server is missing TOKEN_ENCRYPTION_KEY; cannot accept credentials.")
         project = _get_or_create_project(db, "url", source, target_project_name(urls))
         notes.append("The operator confirmed being authorised to test these targets.")
-        scan = Scan(project_id=project.id, checks=check_cfg, notes=notes, status="queued")
+        if headers_a:
+            notes.append("Authenticated scan as user A" + (" with user B for comparison" if headers_b else "")
+                         + f" (header names: {', '.join(headers_a)}; values are never stored).")
+        options = {"endpoints": eps, "auth_a": bool(headers_a), "auth_b": bool(headers_b)}
+        scan = Scan(project_id=project.id, checks=check_cfg, notes=notes, status="queued",
+                    git_token_enc=creds_enc, options=options)
         db.add(scan)
         db.commit()
         return {"id": scan.id, "project_id": project.id}
@@ -201,6 +228,7 @@ def _scan_detail(scan: Scan) -> dict:
         error=scan.error,
         ai_summary=scan.ai_summary,
         diff=scan.diff or {},
+        options=scan.options or {},
         statuses=STATUSES,
         suppressed={k: sum(1 for f in scan.findings if f.status == k)
                     for k in ("false_positive", "accepted_risk", "fixed")},

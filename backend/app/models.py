@@ -55,8 +55,11 @@ class Scan(Base):
     # Comparison with the previous completed scan of the same project:
     # {"previous_scan_id", "new", "recurring", "fixed", "fixed_items": [...]}
     diff: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Non-secret scan options, e.g. {"endpoints": [...], "auth_a": true, "auth_b": false}.
+    options: Mapped[dict] = mapped_column(JSON, default=dict)
 
-    # Fernet-encrypted Git token. Wiped as soon as the scan finishes. Never returned by the API.
+    # Fernet-encrypted secret: the Git token (git scans) or the JSON auth headers (URL scans).
+    # Wiped as soon as the scan finishes. Never returned by the API.
     git_token_enc: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     # Path of the uploaded zip on the shared volume. Deleted when the scan finishes.
     upload_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)

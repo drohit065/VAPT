@@ -11,6 +11,10 @@ export default function NewScan() {
   const [file, setFile] = useState(null)
   const [targets, setTargets] = useState('')
   const [authorized, setAuthorized] = useState(false)
+  const [authA, setAuthA] = useState('')
+  const [authB, setAuthB] = useState('')
+  const [endpoints, setEndpoints] = useState('')
+  const [showAuth, setShowAuth] = useState(false)
   const [checks, setChecks] = useState({})
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -50,13 +54,16 @@ export default function NewScan() {
     } else if (mode === 'url') {
       form.append('target_urls', targets)
       form.append('authorized', authorized ? 'true' : 'false')
+      if (authA.trim()) form.append('auth_a', authA.trim())
+      if (authB.trim()) form.append('auth_b', authB.trim())
+      if (endpoints.trim()) form.append('endpoints', endpoints.trim())
     } else {
       form.append('file', file)
     }
     setBusy(true)
     try {
       const res = await api('/api/scans', { method: 'POST', form })
-      setToken('')
+      setToken(''); setAuthA(''); setAuthB('')
       navigate(`/scans/${res.id}`)
     } catch (err) {
       setError(err.message)
@@ -128,6 +135,50 @@ export default function NewScan() {
                 Sends a few thousand requests per target (rate-limited to 30/s). Destructive, brute-force and fuzzing
                 tests are excluded. Private and internal addresses are blocked. Run against staging first if you can.
               </p>
+
+              <div className="auth-box">
+                <button type="button" className="linkbtn auth-toggle" onClick={() => setShowAuth(s => !s)}
+                        aria-expanded={showAuth}>
+                  {showAuth ? '▾' : '▸'} Authenticated scan and access control (optional)
+                </button>
+                {showAuth && (
+                  <>
+                    <p className="muted small" style={{ marginTop: 6 }}>
+                      Paste request headers of a logged-in session, one per line, e.g.
+                      <span className="mono"> Authorization: Bearer eyJ…</span> or
+                      <span className="mono"> Cookie: session=…</span>. Use test accounts. Values are encrypted
+                      while queued, used only during the scan, then deleted; they are never shown again.
+                    </p>
+                    <div className="grid2">
+                      <div className="field">
+                        <label htmlFor="authA">User A headers</label>
+                        <textarea id="authA" className="mono" rows={3} spellCheck={false} autoComplete="off"
+                                  placeholder="Authorization: Bearer …"
+                                  value={authA} onChange={e => setAuthA(e.target.value)} />
+                      </div>
+                      <div className="field">
+                        <label htmlFor="authB">User B headers <span className="muted small">(a different user, optional)</span></label>
+                        <textarea id="authB" className="mono" rows={3} spellCheck={false} autoComplete="off"
+                                  placeholder="Authorization: Bearer …"
+                                  value={authB} onChange={e => setAuthB(e.target.value)} />
+                      </div>
+                    </div>
+                    <div className="field">
+                      <label htmlFor="endpoints">
+                        Protected endpoints to compare <span className="muted small">(one per line, paths or full URLs on the
+                        targets above, ideally ones returning user A's own data, e.g. /api/users/123, /api/orders/45)</span>
+                      </label>
+                      <textarea id="endpoints" className="mono" rows={4} spellCheck={false}
+                                placeholder={'/api/me\n/api/orders/1001'}
+                                value={endpoints} onChange={e => setEndpoints(e.target.value)} />
+                    </div>
+                    <p className="muted small" style={{ margin: 0 }}>
+                      The access control check sends GET requests only: each endpoint as user A, without credentials,
+                      and as user B, and flags identical responses.
+                    </p>
+                  </>
+                )}
+              </div>
             </>
           ) : (
             <div className="field">

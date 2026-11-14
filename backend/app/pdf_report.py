@@ -40,6 +40,7 @@ SEV_FG = {"Critical": colors.white, "High": colors.white,
 CHECK_LABELS = {"code": "Code flaws (Semgrep)", "deps": "Vulnerable dependencies (Trivy)",
                 "secrets": "Hardcoded secrets (Gitleaks)", "iac": "Docker and Terraform (Trivy config)",
                 "web": "Web security checks", "nuclei": "Known vulnerabilities (Nuclei)",
+                "authz": "Access control comparison",
                 "ai": "AI review (Claude)"}
 SNIPPET_WIDTH = 100
 MAX_SNIPPET_LINES = 20

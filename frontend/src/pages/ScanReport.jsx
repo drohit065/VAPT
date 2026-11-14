@@ -10,6 +10,7 @@ const CHECK_LABELS = {
   iac: 'Docker / Terraform',
   web: 'Web checks',
   nuclei: 'Nuclei',
+  authz: 'Access control',
 }
 const STATUS_LABELS = {
   open: 'Open',
