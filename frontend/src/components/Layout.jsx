@@ -2,14 +2,17 @@ import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { api, setToken } from '../api.js'
 
+const RANK = { viewer: 0, analyst: 1, admin: 2 }
+export const can = (user, role) => !!user && RANK[user.role] >= RANK[role]
+
 export default function Layout() {
   const [open, setOpen] = useState(false)
-  const [user, setUser] = useState('')
+  const [user, setUser] = useState(null)
   const navigate = useNavigate()
   const location = useLocation()
 
   useEffect(() => { setOpen(false) }, [location.pathname])
-  useEffect(() => { api('/api/auth/me').then(d => setUser(d.username)).catch(() => {}) }, [])
+  useEffect(() => { api('/api/auth/me').then(setUser).catch(() => {}) }, [])
 
   function logout() {
     setToken(null)
@@ -28,14 +31,21 @@ export default function Layout() {
         <div className="brand">VAPT <span>Scanner</span></div>
         <nav className="nav">
           <NavLink to="/projects">Projects</NavLink>
-          <NavLink to="/scans/new">New scan</NavLink>
+          {can(user, 'analyst') && <NavLink to="/scans/new">New scan</NavLink>}
+          {can(user, 'admin') && <NavLink to="/users">Users</NavLink>}
+          {can(user, 'admin') && <NavLink to="/audit">Audit log</NavLink>}
         </nav>
         <div className="spacer" />
-        {user && <div className="user">Signed in as {user}</div>}
+        {user && (
+          <div className="user">
+            Signed in as {user.username}
+            <div className="small" style={{ opacity: 0.7 }}>{user.role}{user.builtin ? ' (built-in)' : ''}</div>
+          </div>
+        )}
         <button className="linkbtn" onClick={logout}>Sign out</button>
       </aside>
       <main className="main">
-        <Outlet />
+        <Outlet context={{ user }} />
       </main>
     </div>
   )

@@ -274,3 +274,17 @@ tr.current td { background: #eef5f6; }
 .auth-toggle { color: var(--teal); font-weight: 600; padding: 0; }
 .switch-row.risky .switch-label { color: var(--high); }
 .field input[type="url"]#spec { width: 100%; }
+
+/* ---------- Users / audit ---------- */
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.grid3 .field input, .grid3 .field select, table.list select {
+  font: inherit; padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: #fff; width: 100%;
+}
+table.list select { width: auto; }
+.row-actions { white-space: nowrap; }
+.row-actions .linkbtn { color: var(--teal); margin-right: 10px; }
+.linkbtn.danger { color: var(--crit) !important; }
+.filter-input { font: inherit; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius); }
+.nowrap { white-space: nowrap; }
+.tag.act-login_failed { background: #fbe9eb; color: var(--crit); }
+@media (max-width: 760px) { .grid3 { grid-template-columns: 1fr; } .row-actions { white-space: normal; } }

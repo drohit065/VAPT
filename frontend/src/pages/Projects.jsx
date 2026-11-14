@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useOutletContext } from 'react-router-dom'
 import { api } from '../api.js'
+import { can } from '../components/Layout.jsx'
 import { CountChips, SevBadge, fmtTime } from '../components/Severity.jsx'
 
 export default function Projects() {
   const [items, setItems] = useState(null)
   const [error, setError] = useState('')
   const navigate = useNavigate()
+  const { user } = useOutletContext() || {}
 
   useEffect(() => {
     api('/api/projects').then(setItems).catch(e => setError(e.message))
@@ -25,7 +27,7 @@ export default function Projects() {
           <h1>Projects</h1>
           <div className="muted">Every scanned repository or upload, with its latest results.</div>
         </div>
-        <Link className="btn" to="/scans/new">New scan</Link>
+        {can(user, 'analyst') && <Link className="btn" to="/scans/new">New scan</Link>}
       </div>
       {error && <div className="error">{error}</div>}
       <div className="card" style={{ padding: 8 }}>

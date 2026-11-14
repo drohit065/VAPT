@@ -107,3 +107,30 @@ class Finding(Base):
     cvss_source: Mapped[str | None] = mapped_column(String(20), nullable=True)  # scanner | estimated
 
     scan: Mapped[Scan] = relationship(back_populates="findings")
+
+
+class User(Base):
+    """Dashboard users. The admin from .env always exists in addition to these (built-in admin)."""
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(300))
+    role: Mapped[str] = mapped_column(String(20), default="viewer")  # admin | analyst | viewer
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Bumped on password change / deactivation: older sessions stop working immediately.
+    token_version: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    username: Mapped[str] = mapped_column(String(100), index=True)
+    action: Mapped[str] = mapped_column(String(60), index=True)
+    target: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)

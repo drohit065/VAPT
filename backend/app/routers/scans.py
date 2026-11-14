@@ -5,12 +5,12 @@ import uuid
 import zipfile
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..auth import require_user
+from ..auth import CurrentUser, audit, client_ip, require_role, require_user
 from ..config import get_settings
 from ..db import get_db
 from ..models import Finding, Project, Scan
@@ -104,6 +104,7 @@ def _safe_zip_name(filename: str | None) -> str:
 
 @router.post("/scans")
 async def create_scan(
+    request: Request,
     source_type: str = Form(...),
     repo_url: str | None = Form(None),
     branch: str | None = Form(None),
@@ -116,9 +117,18 @@ async def create_scan(
     spec_url: str | None = Form(None),
     checks: str | None = Form(None),
     file: UploadFile | None = File(None),
+
     db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_role("analyst")),
 ):
     s = get_settings()
+    ip = client_ip(request)
+
+    def created(scan: Scan, project: Project) -> dict:
+        audit(user.username, "scan_created", f"scan {scan.id}: {project.name}"[:300],
+              {"source_type": project.source_type, "checks": [k for k, v in (scan.checks or {}).items() if v]},
+              ip, db=db)
+        return {"id": scan.id, "project_id": project.id}
     if source_type not in ("git", "zip", "url"):
         raise HTTPException(400, "source_type must be 'git', 'zip' or 'url'")
     check_cfg, notes = _parse_checks(checks, source_type)
@@ -165,7 +175,7 @@ async def create_scan(
                     git_token_enc=creds_enc, options=options)
         db.add(scan)
         db.commit()
-        return {"id": scan.id, "project_id": project.id}
+        return created(scan, project)
 
     if source_type == "git":
         try:
@@ -190,7 +200,7 @@ async def create_scan(
         )
         db.add(scan)
         db.commit()
-        return {"id": scan.id, "project_id": project.id}
+        return created(scan, project)
 
     if source_type == "zip":
         if file is None:
@@ -221,7 +231,7 @@ async def create_scan(
         scan = Scan(project_id=project.id, checks=check_cfg, notes=notes, upload_path=dest, status="queued")
         db.add(scan)
         db.commit()
-        return {"id": scan.id, "project_id": project.id}
+        return created(scan, project)
 
     raise HTTPException(400, "source_type must be 'git', 'zip' or 'url'")
 
@@ -286,17 +296,21 @@ class FindingStatusIn(BaseModel):
 
 
 @router.patch("/findings/{finding_id}")
-def update_finding(finding_id: int, body: FindingStatusIn, db: Session = Depends(get_db)):
+def update_finding(finding_id: int, body: FindingStatusIn, request: Request, db: Session = Depends(get_db),
+                   user: CurrentUser = Depends(require_role("analyst"))):
     if body.status not in STATUSES:
         raise HTTPException(400, f"status must be one of: {', '.join(STATUSES)}")
     f = db.get(Finding, finding_id)
     if not f:
         raise HTTPException(404, "Finding not found")
+    old = f.status
     f.status = body.status
     f.status_note = (body.note or "").strip() or None
     f.status_updated_at = datetime.now(timezone.utc)
     f.scan.counts = open_counts(f.scan.findings)
     db.commit()
+    audit(user.username, "finding_status", f"finding {f.id} (scan {f.scan_id})",
+          {"from": old, "to": body.status, "title": f.title[:200]}, client_ip(request))
     return finding_dict(f) | {"scan_counts": f.scan.counts}
 
 
@@ -320,18 +334,22 @@ def _completed_scan(db: Session, scan_id: int) -> Scan:
 
 
 @router.get("/scans/{scan_id}/export.csv")
-def export_csv(scan_id: int, db: Session = Depends(get_db)):
+def export_csv(scan_id: int, request: Request, db: Session = Depends(get_db),
+               user: CurrentUser = Depends(require_user)):
     from ..exports import to_csv
     scan = _completed_scan(db, scan_id)
+    audit(user.username, "export_csv", f"scan {scan.id}", ip=client_ip(request))
     return Response(content="﻿" + to_csv(_sorted_findings(scan)), media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="{_export_name(scan, "csv")}"',
                              "Cache-Control": "no-store"})
 
 
 @router.get("/scans/{scan_id}/export.sarif")
-def export_sarif(scan_id: int, db: Session = Depends(get_db)):
+def export_sarif(scan_id: int, request: Request, db: Session = Depends(get_db),
+                 user: CurrentUser = Depends(require_user)):
     from ..exports import to_sarif
     scan = _completed_scan(db, scan_id)
+    audit(user.username, "export_sarif", f"scan {scan.id}", ip=client_ip(request))
     body = json.dumps(to_sarif(_scan_detail(scan), _sorted_findings(scan)), indent=2, default=str)
     return Response(content=body, media_type="application/sarif+json",
                     headers={"Content-Disposition": f'attachment; filename="{_export_name(scan, "sarif")}"',
@@ -339,7 +357,8 @@ def export_sarif(scan_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/scans/{scan_id}/report.pdf")
-def get_report_pdf(scan_id: int, db: Session = Depends(get_db)):
+def get_report_pdf(scan_id: int, request: Request, db: Session = Depends(get_db),
+                   user: CurrentUser = Depends(require_user)):
     scan = db.get(Scan, scan_id)
     if not scan:
         raise HTTPException(404, "Scan not found")
@@ -350,6 +369,7 @@ def get_report_pdf(scan_id: int, db: Session = Depends(get_db)):
 
     items = sorted((finding_dict(f) for f in scan.findings), key=sort_key)
     pdf = build_pdf(_scan_detail(scan), items)
+    audit(user.username, "export_pdf", f"scan {scan.id}", ip=client_ip(request))
     name = re.sub(r"[^A-Za-z0-9._-]", "_", scan.project.name)[:80] or "project"
     return Response(
         content=pdf,

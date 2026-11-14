@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useOutletContext, useParams } from 'react-router-dom'
 import { api } from '../api.js'
+import { can } from '../components/Layout.jsx'
 import { CountChips, SEVERITIES, SevBadge, SeverityBar, fmtTime } from '../components/Severity.jsx'
 
 const CHECK_LABELS = {
@@ -82,7 +83,7 @@ function StatusEditor({ f, onSaved }) {
   )
 }
 
-function Finding({ f, open, onToggle, onSaved }) {
+function Finding({ f, open, onToggle, onSaved, canEdit }) {
   const triaged = f.status && f.status !== 'open'
   return (
     <div className={`finding${open ? ' open' : ''}${triaged ? ' triaged' : ''}`}>
@@ -137,7 +138,9 @@ function Finding({ f, open, onToggle, onSaved }) {
             </section>
           )}
           {f.rule_id && <div className="small muted mono" style={{ marginTop: 10 }}>Rule: {f.rule_id}</div>}
-          <StatusEditor key={`${f.id}-${f.status}-${f.status_note}`} f={f} onSaved={onSaved} />
+          {canEdit
+            ? <StatusEditor key={`${f.id}-${f.status}-${f.status_note}`} f={f} onSaved={onSaved} />
+            : f.status_note && <section><h3>Triage note</h3><p className="pre-wrap">{f.status_note}</p></section>}
         </div>
       )}
     </div>
@@ -178,6 +181,7 @@ function DiffCard({ diff }) {
 
 export default function ScanReport() {
   const { id } = useParams()
+  const { user } = useOutletContext() || {}
   const [scan, setScan] = useState(null)
   const [findings, setFindings] = useState(null)
   const [error, setError] = useState('')
@@ -364,7 +368,7 @@ export default function ScanReport() {
         {findings.length === 0 && <div className="empty">No findings. 🎉</div>}
         {findings.length > 0 && shown.length === 0 && <div className="empty">No findings match this filter.</div>}
         {shown.map(f => (
-          <Finding key={f.id} f={f} open={!!open[f.id]} onSaved={onSaved}
+          <Finding key={f.id} f={f} open={!!open[f.id]} onSaved={onSaved} canEdit={can(user, 'analyst')}
                    onToggle={() => setOpen(o => ({ ...o, [f.id]: !o[f.id] }))} />
         ))}
       </div>
