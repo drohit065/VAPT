@@ -314,3 +314,6 @@ table.list select { width: auto; }
   border-radius: 6px; padding: 8px 10px; word-break: break-all; }
 .code-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 tr.revoked td { opacity: 0.55; }
+.creds-box { margin-top: 10px; padding: 12px; background: #f7f9fb; border: 1px solid var(--border); border-radius: var(--radius); }
+.creds-box textarea { width: 100%; }
+.pill:not(.ok) { background: #eef0f4; color: var(--muted); }

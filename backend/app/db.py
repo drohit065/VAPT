@@ -59,6 +59,7 @@ MIGRATIONS = [
     "ALTER TABLE projects ADD COLUMN IF NOT EXISTS schedule_hour INTEGER NOT NULL DEFAULT 2",
     "ALTER TABLE projects ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ",
     "ALTER TABLE projects ADD COLUMN IF NOT EXISTS schedule_config JSON",
+    "ALTER TABLE projects ADD COLUMN IF NOT EXISTS schedule_creds_enc BYTEA",
     "ALTER TABLE findings ADD COLUMN IF NOT EXISTS fingerprint VARCHAR(64)",
     "CREATE INDEX IF NOT EXISTS ix_findings_fingerprint ON findings (fingerprint)",
     "ALTER TABLE findings ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'open'",

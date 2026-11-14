@@ -167,3 +167,27 @@ def test_gate_logic():
     assert s.quality_gate(sc.id, "none", False, db)["passed"] is True
     db.close()
     assert SimpleNamespace
+
+
+def test_schedule_credentials_write_only(client):
+    from app.db import SessionLocal
+    from app.models import Project, Scan
+    admin = hdr(login(client, "admin", "builtin-admin-password-123").json()["access_token"])
+    db = SessionLocal()
+    p = Project(name="private-repo", source_type="git", source="https://github.com/acme/private")
+    db.add(p)
+    db.flush()
+    db.add(Scan(project_id=p.id, status="completed", checks={"code": True}, branch="main"))
+    db.commit()
+    pid = p.id
+    db.close()
+    r = client.put(f"/api/projects/{pid}/schedule", headers=admin,
+                   json={"schedule": "daily", "hour_utc": 3, "git_token": "ghp_secretvalue123"})
+    assert r.status_code == 200 and r.json()["schedule_has_credentials"] is True
+    assert "ghp_secretvalue123" not in r.text
+    r = client.put(f"/api/projects/{pid}/schedule", headers=admin, json={"schedule": "daily", "hour_utc": 3})
+    assert r.json()["schedule_has_credentials"] is True          # kept when not re-entered
+    r = client.put(f"/api/projects/{pid}/schedule", headers=admin,
+                   json={"schedule": "daily", "hour_utc": 3, "clear_credentials": True})
+    assert r.json()["schedule_has_credentials"] is False
+    assert "ghp_secretvalue123" not in str(client.get("/api/audit", headers=admin).json())

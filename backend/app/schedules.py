@@ -30,8 +30,8 @@ def config_from_scan(scan: Scan) -> dict:
     opts.pop("auth_a", None)
     opts.pop("auth_b", None)
     checks = dict(scan.checks or {})
-    checks.pop("authz", None)  # needs credentials, which are not kept
-    return {"checks": checks, "branch": scan.branch, "options": opts}
+    authz = bool(checks.pop("authz", None))  # needs credentials: only re-enabled when they are saved
+    return {"checks": checks, "branch": scan.branch, "options": opts, "authz_with_creds": authz}
 
 
 def enqueue_due(db, now: datetime | None = None) -> list[int]:
@@ -49,10 +49,18 @@ def enqueue_due(db, now: datetime | None = None) -> list[int]:
         cfg = p.schedule_config or {}
         if busy or not cfg.get("checks"):
             continue
-        scan = Scan(project_id=p.id, status="queued", checks=cfg["checks"], branch=cfg.get("branch"),
-                    options=cfg.get("options") or {},
-                    notes=[f"Scheduled {p.schedule} scan (credentials are not stored, so it runs without "
-                           "access tokens or login headers)."])
+        checks = dict(cfg["checks"])
+        options = dict(cfg.get("options") or {})
+        if p.schedule_creds_enc:
+            note = f"Scheduled {p.schedule} scan with the project's saved credentials."
+            if p.source_type == "url" and cfg.get("authz_with_creds"):
+                checks["authz"] = True
+                options["auth_a"] = True
+        else:
+            note = (f"Scheduled {p.schedule} scan without credentials (none are saved for this project, so "
+                    "private repositories, logged-in pages or private images are not reachable).")
+        scan = Scan(project_id=p.id, status="queued", checks=checks, branch=cfg.get("branch"), options=options,
+                    git_token_enc=p.schedule_creds_enc, notes=[note])
         db.add(scan)
         db.flush()
         created.append(scan.id)

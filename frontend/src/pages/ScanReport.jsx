@@ -178,21 +178,32 @@ function Finding({ f, open, onToggle, onSaved, canEdit, provider }) {
 function ScheduleCard({ project, canEdit, onSaved }) {
   const [schedule, setSchedule] = useState(project.schedule || 'none')
   const [hour, setHour] = useState(project.schedule_hour ?? 2)
+  const [showCreds, setShowCreds] = useState(false)
+  const [creds, setCreds] = useState({ git_token: '', auth_a: '', auth_b: '', registry_user: '', registry_password: '' })
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
-  const dirty = schedule !== (project.schedule || 'none') || Number(hour) !== (project.schedule_hour ?? 2)
+  const [msg, setMsg] = useState('')
+  const credsEntered = Object.values(creds).some(v => v.trim())
+  const dirty = schedule !== (project.schedule || 'none') || Number(hour) !== (project.schedule_hour ?? 2) || credsEntered
 
   if (project.source_type === 'zip') return null
+  const type = project.source_type
+  const setC = (k, v) => setCreds({ ...creds, [k]: v })
 
-  async function save() {
-    setBusy(true); setErr('')
+  async function save(extra = {}) {
+    setBusy(true); setErr(''); setMsg('')
     try {
       const p = await api(`/api/projects/${project.id}/schedule`, {
-        method: 'PUT', body: { schedule, hour_utc: Number(hour) },
+        method: 'PUT', body: { schedule, hour_utc: Number(hour), ...creds, ...extra },
       })
       onSaved({ ...project, ...p })
+      setCreds({ git_token: '', auth_a: '', auth_b: '', registry_user: '', registry_password: '' })
+      setShowCreds(false)
+      setMsg('Schedule saved.')
     } catch (e) { setErr(e.message) } finally { setBusy(false) }
   }
+
+  const credLabel = { git: 'access token', url: 'login headers', image: 'registry login' }[type]
 
   return (
     <div className="card schedule-card">
@@ -212,7 +223,7 @@ function ScheduleCard({ project, canEdit, onSaved }) {
                 </select>{' '}UTC
               </label>
             )}
-            <button type="button" className="btn small-btn" onClick={save} disabled={busy || !dirty}>
+            <button type="button" className="btn small-btn" onClick={() => save()} disabled={busy || !dirty}>
               {busy ? 'Saving…' : 'Save'}
             </button>
           </>
@@ -222,12 +233,60 @@ function ScheduleCard({ project, canEdit, onSaved }) {
         {project.next_run_at && project.schedule !== 'none' && (
           <span className="small muted">Next run: {fmtTime(project.next_run_at)}</span>
         )}
+        {project.schedule !== 'none' && (
+          <span className={`pill ${project.schedule_has_credentials ? 'ok' : ''}`}>
+            {project.schedule_has_credentials ? `${credLabel} saved` : `no ${credLabel}`}
+          </span>
+        )}
       </div>
       {err && <div className="error small" style={{ marginTop: 8 }}>{err}</div>}
-      <div className="small muted" style={{ marginTop: 6 }}>
-        Repeats this project's latest scan settings. Access tokens and login headers are never stored, so scheduled
-        scans of private repositories or authenticated pages need a manual scan.
-      </div>
+      {msg && <div className="small" style={{ marginTop: 8, color: 'var(--ok)' }}>{msg}</div>}
+
+      {canEdit && schedule !== 'none' && (
+        <div style={{ marginTop: 10 }}>
+          <button type="button" className="linkbtn auth-toggle" onClick={() => setShowCreds(s => !s)}>
+            {showCreds ? '▾' : '▸'} {project.schedule_has_credentials ? `Replace or remove the saved ${credLabel}` : `Save ${credLabel} for scheduled runs (optional)`}
+          </button>
+          {showCreds && (
+            <div className="creds-box">
+              {type === 'git' && (
+                <div className="field"><label htmlFor="sgt">Read-only access token</label>
+                  <input id="sgt" type="password" autoComplete="off" value={creds.git_token} onChange={e => setC('git_token', e.target.value)} /></div>
+              )}
+              {type === 'url' && (
+                <div className="grid2">
+                  <div className="field"><label htmlFor="sa">User A headers</label>
+                    <textarea id="sa" className="mono" rows={2} spellCheck={false} placeholder="Authorization: Bearer …"
+                              value={creds.auth_a} onChange={e => setC('auth_a', e.target.value)} /></div>
+                  <div className="field"><label htmlFor="sb">User B headers <span className="muted small">(optional)</span></label>
+                    <textarea id="sb" className="mono" rows={2} spellCheck={false} placeholder="Authorization: Bearer …"
+                              value={creds.auth_b} onChange={e => setC('auth_b', e.target.value)} /></div>
+                </div>
+              )}
+              {type === 'image' && (
+                <div className="grid2">
+                  <div className="field"><label htmlFor="sru">Registry username</label>
+                    <input id="sru" autoComplete="off" value={creds.registry_user} onChange={e => setC('registry_user', e.target.value)} /></div>
+                  <div className="field"><label htmlFor="srp">Registry password / token</label>
+                    <input id="srp" type="password" autoComplete="off" value={creds.registry_password} onChange={e => setC('registry_password', e.target.value)} /></div>
+                </div>
+              )}
+              <p className="small muted" style={{ margin: '4px 0 0' }}>
+                Stored encrypted and used only by scheduled runs; never shown again. Use read-only test credentials that you can rotate.
+                {project.schedule_has_credentials && (
+                  <> <button type="button" className="linkbtn danger" disabled={busy}
+                             onClick={() => save({ clear_credentials: true })}>Remove saved {credLabel}</button></>
+                )}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+      {!project.schedule_has_credentials && project.schedule !== 'none' && (
+        <div className="small muted" style={{ marginTop: 6 }}>
+          Scheduled runs repeat this project's latest scan settings without credentials unless you save them here.
+        </div>
+      )}
     </div>
   )
 }

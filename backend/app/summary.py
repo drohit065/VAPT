@@ -48,4 +48,5 @@ def project_summary(p: Project) -> dict:
         "schedule": p.schedule or "none",
         "schedule_hour": p.schedule_hour if p.schedule_hour is not None else 2,
         "next_run_at": p.next_run_at,
+        "schedule_has_credentials": bool(p.schedule_creds_enc),
     }

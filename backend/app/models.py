@@ -36,6 +36,9 @@ class Project(Base):
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Non-secret copy of the scan settings to repeat: {"checks", "branch", "options"}.
     schedule_config: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Optional Fernet-encrypted credentials for scheduled runs (same payload a manual scan uses:
+    # git token string, URL auth headers JSON or registry login JSON). Never returned by the API.
+    schedule_creds_enc: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
 
     scans: Mapped[list["Scan"]] = relationship(
         back_populates="project", cascade="all, delete-orphan", order_by="Scan.id.desc()"

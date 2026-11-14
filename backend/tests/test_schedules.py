@@ -24,7 +24,8 @@ def test_config_drops_secrets_and_authz():
     s = Scan(checks={"web": True, "authz": True}, branch="main",
              options={"endpoints": ["https://a.example.com/x"], "auth_a": True, "auth_b": True})
     cfg = config_from_scan(s)
-    assert cfg == {"checks": {"web": True}, "branch": "main", "options": {"endpoints": ["https://a.example.com/x"]}}
+    assert cfg == {"checks": {"web": True}, "branch": "main", "options": {"endpoints": ["https://a.example.com/x"]},
+                   "authz_with_creds": True}
 
 
 def _db():
@@ -56,3 +57,16 @@ def test_enqueue_due_creates_scan_and_advances():
     due.next_run_at = datetime(2026, 11, 14, 2, 0, tzinfo=timezone.utc)
     db.commit()
     assert enqueue_due(db, now=T) == []
+
+
+def test_enqueue_due_uses_saved_credentials():
+    db = _db()
+    p = Project(name="u", source_type="url", source="https://a.example.com/", schedule="weekly", schedule_hour=2,
+                next_run_at=datetime(2026, 11, 14, 2, 0, tzinfo=timezone.utc), schedule_creds_enc=b"encrypted-blob",
+                schedule_config={"checks": {"web": True}, "options": {}, "authz_with_creds": True})
+    db.add(p)
+    db.commit()
+    scan = db.get(Scan, enqueue_due(db, now=T)[0])
+    assert scan.git_token_enc == b"encrypted-blob"
+    assert scan.checks == {"web": True, "authz": True} and scan.options["auth_a"] is True
+    assert "saved credentials" in scan.notes[0]

@@ -38,6 +38,32 @@ def get_project(project_id: int, db: Session = Depends(get_db)):
 class ScheduleIn(BaseModel):
     schedule: str
     hour_utc: int = Field(default=2, ge=0, le=23)
+    # Optional credentials for scheduled runs (write-only). Which fields apply depends on the project type:
+    git_token: str = Field(default="", max_length=1000)          # git
+    auth_a: str = Field(default="", max_length=20000)            # url: user A headers
+    auth_b: str = Field(default="", max_length=20000)            # url: user B headers
+    registry_user: str = Field(default="", max_length=200)       # image
+    registry_password: str = Field(default="", max_length=4000)  # image
+    clear_credentials: bool = False
+
+
+def _creds_payload(p: Project, body: ScheduleIn) -> str | None:
+    """The same encrypted payload format a manual scan of this project type uses, or None."""
+    import json
+
+    from ..security import ValidationError, parse_auth_headers
+    if p.source_type == "git" and body.git_token.strip():
+        return body.git_token.strip()
+    if p.source_type == "url" and body.auth_a.strip():
+        try:
+            return json.dumps({"a": parse_auth_headers(body.auth_a), "b": parse_auth_headers(body.auth_b)})
+        except (ValidationError, ValueError) as e:
+            raise HTTPException(400, str(e))
+    if p.source_type == "image" and body.registry_user.strip():
+        if not body.registry_password.strip():
+            raise HTTPException(400, "Enter the registry password / token too.")
+        return json.dumps({"u": body.registry_user.strip(), "p": body.registry_password.strip()})
+    return None
 
 
 @router.put("/{project_id}/schedule")
@@ -55,9 +81,21 @@ def set_schedule(project_id: int, body: ScheduleIn, request: Request, db: Sessio
         if not last:
             raise HTTPException(400, "Run one scan of this project first; the schedule repeats its settings.")
         p.schedule_config = config_from_scan(last)
+    creds_action = None
+    payload = _creds_payload(p, body)
+    if body.clear_credentials or body.schedule == "none":
+        creds_action = "removed" if p.schedule_creds_enc else None
+        p.schedule_creds_enc = None
+    if payload and body.schedule != "none":
+        from ..security import encrypt_token
+        try:
+            p.schedule_creds_enc = encrypt_token(payload)
+        except RuntimeError:
+            raise HTTPException(500, "Server is missing TOKEN_ENCRYPTION_KEY; cannot store credentials.")
+        creds_action = "saved"
     p.schedule, p.schedule_hour = body.schedule, body.hour_utc
     p.next_run_at = next_run(body.schedule, body.hour_utc)
     db.commit()
-    audit(user.username, "schedule_changed", p.name, {"schedule": body.schedule, "hour_utc": body.hour_utc},
-          client_ip(request))
+    audit(user.username, "schedule_changed", p.name, {"schedule": body.schedule, "hour_utc": body.hour_utc}
+          | ({"credentials": creds_action} if creds_action else {}), client_ip(request))
     return project_summary(p)
