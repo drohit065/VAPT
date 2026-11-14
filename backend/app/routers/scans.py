@@ -62,9 +62,12 @@ CHECK_SOURCES = {"code": CODE_SOURCES, "deps": CODE_SOURCES, "secrets": CODE_SOU
 
 
 @router.get("/meta")
-def meta():
+def meta(db: Session = Depends(get_db)):
+    from ..models import AppSetting
     s = get_settings()
+    ticketing = db.get(AppSetting, "ticketing")
     return {
+        "ticketing": (ticketing.value or {}).get("provider", "none") if ticketing else "none",
         "checks": [{"key": k, "label": v, "default": DEFAULT_CHECKS[k], "sources": CHECK_SOURCES[k]}
                    for k, v in CHECKS.items()],
         "ai_available": s.ai_enabled,
@@ -307,6 +310,7 @@ def finding_dict(f: Finding) -> dict:
         "fingerprint": f.fingerprint, "status": f.status or "open", "status_note": f.status_note,
         "status_updated_at": f.status_updated_at, "is_new": f.is_new,
         "cvss_score": f.cvss_score, "cvss_vector": f.cvss_vector, "cvss_source": f.cvss_source,
+        "ticket_key": f.ticket_key, "ticket_url": f.ticket_url,
     }
 
 
@@ -411,3 +415,72 @@ def get_report_pdf(scan_id: int, request: Request, db: Session = Depends(get_db)
             "Cache-Control": "no-store",
         },
     )
+
+
+# ---------------------------------------------------------------- tickets
+
+
+class BulkTicketsIn(BaseModel):
+    min_severity: str = "High"
+
+
+def _ticket_cfg(db: Session) -> tuple[dict, dict]:
+    from ..settings_store import load
+    from ..ticketing import DEFAULTS as TD
+    cfg, secrets = load(db, "ticketing")
+    cfg = {**TD, **cfg}
+    if cfg["provider"] == "none":
+        raise HTTPException(400, "No ticketing integration is configured (Settings → Ticketing).")
+    return cfg, secrets
+
+
+def _create_ticket(db: Session, f: Finding, cfg: dict, secrets: dict) -> None:
+    from ..ticketing import app_url, create_issue, ticket_text
+    title, body = ticket_text(finding_dict(f), f.scan.project.name, f.scan_id, app_url())
+    f.ticket_key, f.ticket_url = create_issue(cfg, secrets, title, body)
+    db.commit()
+
+
+@router.post("/findings/{finding_id}/ticket")
+async def create_ticket(finding_id: int, request: Request, db: Session = Depends(get_db),
+                        user: CurrentUser = Depends(require_role("analyst"))):
+    from ..ticketing import TicketError
+    f = db.get(Finding, finding_id)
+    if not f:
+        raise HTTPException(404, "Finding not found")
+    if f.ticket_url:
+        return finding_dict(f)
+    cfg, secrets = _ticket_cfg(db)
+    try:
+        await run_in_threadpool(_create_ticket, db, f, cfg, secrets)
+    except (TicketError, ValidationError, OSError) as e:
+        raise HTTPException(502, f"Could not create the ticket: {str(e)[:300]}")
+    audit(user.username, "ticket_created", f"finding {f.id}", {"ticket": f.ticket_key, "provider": cfg["provider"]},
+          client_ip(request))
+    return finding_dict(f)
+
+
+@router.post("/scans/{scan_id}/tickets")
+async def create_tickets(scan_id: int, body: BulkTicketsIn, request: Request, db: Session = Depends(get_db),
+                         user: CurrentUser = Depends(require_role("analyst"))):
+    from ..findings_mgmt import SUPPRESSED
+    from ..normalize import SEVERITY_ORDER
+    from ..ticketing import TicketError
+    scan = _completed_scan(db, scan_id)
+    if body.min_severity not in SEVERITY_ORDER:
+        raise HTTPException(400, "min_severity must be Critical, High, Medium or Low")
+    cfg, secrets = _ticket_cfg(db)
+    todo = [f for f in scan.findings if not f.ticket_url and f.status not in SUPPRESSED
+            and SEVERITY_ORDER[f.severity] <= SEVERITY_ORDER[body.min_severity]][:50]
+    created, errors = [], []
+    for f in todo:
+        try:
+            await run_in_threadpool(_create_ticket, db, f, cfg, secrets)
+            created.append(f.ticket_key)
+        except (TicketError, ValidationError, OSError) as e:
+            errors.append(str(e)[:200])
+            break  # the same error would repeat for every finding
+    if created:
+        audit(user.username, "ticket_created", f"scan {scan.id}", {"count": len(created), "provider": cfg["provider"]},
+              client_ip(request))
+    return {"created": created, "errors": errors, "remaining": max(0, len(todo) - len(created))}

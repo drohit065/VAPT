@@ -84,7 +84,31 @@ function StatusEditor({ f, onSaved }) {
   )
 }
 
-function Finding({ f, open, onToggle, onSaved, canEdit }) {
+const PROVIDER_LABEL = { jira: 'Jira issue', github: 'GitHub issue' }
+
+function TicketButton({ f, provider, canEdit, onSaved }) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  if (f.ticket_url) {
+    return <a className="ticket-link" href={f.ticket_url} target="_blank" rel="noopener noreferrer">↗ {f.ticket_key}</a>
+  }
+  if (!canEdit || !provider || provider === 'none') return null
+  async function create() {
+    setBusy(true); setErr('')
+    try { onSaved(await api(`/api/findings/${f.id}/ticket`, { method: 'POST' })) }
+    catch (e) { setErr(e.message) } finally { setBusy(false) }
+  }
+  return (
+    <span>
+      <button type="button" className="btn secondary small-btn" onClick={create} disabled={busy}>
+        {busy ? 'Creating…' : `Create ${PROVIDER_LABEL[provider]}`}
+      </button>
+      {err && <span className="error small inline-error">{err}</span>}
+    </span>
+  )
+}
+
+function Finding({ f, open, onToggle, onSaved, canEdit, provider }) {
   const triaged = f.status && f.status !== 'open'
   return (
     <div className={`finding${open ? ' open' : ''}${triaged ? ' triaged' : ''}`}>
@@ -139,6 +163,9 @@ function Finding({ f, open, onToggle, onSaved, canEdit }) {
             </section>
           )}
           {f.rule_id && <div className="small muted mono" style={{ marginTop: 10 }}>Rule: {f.rule_id}</div>}
+          <div style={{ marginTop: 10 }}>
+            <TicketButton f={f} provider={provider} canEdit={canEdit} onSaved={onSaved} />
+          </div>
           {canEdit
             ? <StatusEditor key={`${f.id}-${f.status}-${f.status_note}`} f={f} onSaved={onSaved} />
             : f.status_note && <section><h3>Triage note</h3><p className="pre-wrap">{f.status_note}</p></section>}
@@ -251,6 +278,9 @@ export default function ScanReport() {
   const [project, setProject] = useState(null)
   const [busy, setBusy] = useState('')
   const [dlError, setDlError] = useState('')
+  const [provider, setProvider] = useState('none')
+  const [bulkMsg, setBulkMsg] = useState('')
+  useEffect(() => { api('/api/meta').then(m => setProvider(m.ticketing || 'none')).catch(() => {}) }, [])
 
   useEffect(() => {
     setScan(null); setFindings(null); setOpen({}); setSev('all'); setCheck('all'); setView('open')
@@ -272,6 +302,16 @@ export default function ScanReport() {
     } finally {
       setBusy('')
     }
+  }
+
+  async function bulkTickets() {
+    setBusy('tickets'); setBulkMsg(''); setDlError('')
+    try {
+      const r = await api(`/api/scans/${id}/tickets`, { method: 'POST', body: { min_severity: 'High' } })
+      setFindings(await api(`/api/scans/${id}/findings`))
+      setBulkMsg(r.errors.length ? `Created ${r.created.length} ticket(s); stopped: ${r.errors[0]}`
+        : r.created.length ? `Created ${r.created.length} ticket(s): ${r.created.join(', ')}` : 'Every open Critical/High finding already has a ticket.')
+    } catch (e) { setDlError(e.message) } finally { setBusy('') }
   }
 
   function onSaved(updated) {
@@ -338,11 +378,18 @@ export default function ScanReport() {
               <button type="button" className="btn" onClick={() => exportAs('pdf')} disabled={!!busy}>
                 {busy === 'pdf' ? 'Preparing PDF…' : 'Download PDF'}
               </button>
+              {can(user, 'analyst') && provider !== 'none' && (
+                <button type="button" className="btn secondary" onClick={bulkTickets} disabled={!!busy}
+                        title="Create a ticket for every open Critical and High finding that has none yet">
+                  {busy === 'tickets' ? 'Creating tickets…' : 'Tickets for Critical/High'}
+                </button>
+              )}
             </>
           )}
         </div>
       </div>
       {dlError && <div className="error">Download failed: {dlError}</div>}
+      {bulkMsg && <div className="info">{bulkMsg}</div>}
       {scan.status !== 'completed' && (
         <div className="info">This scan is {scan.status}. <Link to={`/scans/${scan.id}`}>See progress</Link>.</div>
       )}
@@ -428,7 +475,7 @@ export default function ScanReport() {
         {findings.length === 0 && <div className="empty">No findings. 🎉</div>}
         {findings.length > 0 && shown.length === 0 && <div className="empty">No findings match this filter.</div>}
         {shown.map(f => (
-          <Finding key={f.id} f={f} open={!!open[f.id]} onSaved={onSaved} canEdit={can(user, 'analyst')}
+          <Finding key={f.id} f={f} open={!!open[f.id]} onSaved={onSaved} canEdit={can(user, 'analyst')} provider={provider}
                    onToggle={() => setOpen(o => ({ ...o, [f.id]: !o[f.id] }))} />
         ))}
       </div>

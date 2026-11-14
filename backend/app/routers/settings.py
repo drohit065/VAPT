@@ -89,3 +89,64 @@ async def test_notifications(db: Session = Depends(get_db), me: CurrentUser = De
     errors = await run_in_threadpool(deliver, cfg, secrets, "[VAPT] Test notification",
                                      f"This is a test message sent by {me.username} from VAPT Scanner.")
     return {"ok": not errors, "errors": errors}
+
+
+# ---------------------------------------------------------------- ticketing (Jira / GitHub Issues)
+
+from ..ticketing import DEFAULTS as TICKET_DEFAULTS  # noqa: E402
+from ..ticketing import TicketError, test_connection, validate_config  # noqa: E402
+
+
+class TicketingIn(BaseModel):
+    provider: str = "none"
+    jira_url: str = Field(default="", max_length=300)
+    jira_email: str = Field(default="", max_length=255)
+    jira_project: str = Field(default="", max_length=20)
+    jira_issue_type: str = Field(default="Bug", max_length=50)
+    github_repo: str = Field(default="", max_length=201)
+    labels: list[str] = Field(default_factory=lambda: ["security", "vapt"], max_length=10)
+    jira_token: str = Field(default="", max_length=1000)
+    github_token: str = Field(default="", max_length=1000)
+    clear: list[str] = Field(default_factory=list)
+
+
+def _ticket_public(cfg: dict, secrets: dict) -> dict:
+    return {**TICKET_DEFAULTS, **cfg, "jira_token_set": bool(secrets.get("jira_token")),
+            "github_token_set": bool(secrets.get("github_token"))}
+
+
+@router.get("/ticketing")
+def get_ticketing(db: Session = Depends(get_db), _: CurrentUser = Depends(admin_only)):
+    cfg, secrets = load(db, "ticketing")
+    return _ticket_public(cfg, secrets)
+
+
+@router.put("/ticketing")
+def put_ticketing(body: TicketingIn, request: Request, db: Session = Depends(get_db),
+                  me: CurrentUser = Depends(admin_only)):
+    cfg = {k: getattr(body, k) for k in TICKET_DEFAULTS}
+    cfg["jira_url"] = cfg["jira_url"].strip().rstrip("/")
+    cfg["jira_project"] = cfg["jira_project"].strip().upper()
+    try:
+        validate_config(cfg)
+    except (ValidationError, ValueError) as e:
+        raise HTTPException(400, str(e))
+    _, secrets_old = load(db, "ticketing")
+    secrets = merge_secrets(secrets_old, {"jira_token": body.jira_token, "github_token": body.github_token},
+                            [c for c in body.clear if c in ("jira_token", "github_token")])
+    try:
+        save(db, "ticketing", cfg, secrets)
+    except RuntimeError:
+        raise HTTPException(500, "Server is missing TOKEN_ENCRYPTION_KEY; cannot store secrets.")
+    audit(me.username, "settings_changed", "ticketing", {"provider": cfg["provider"]}, client_ip(request))
+    return _ticket_public(cfg, secrets)
+
+
+@router.post("/ticketing/test")
+async def test_ticketing(db: Session = Depends(get_db), _: CurrentUser = Depends(admin_only)):
+    cfg, secrets = load(db, "ticketing")
+    cfg = {**TICKET_DEFAULTS, **cfg}
+    try:
+        return {"ok": True, "message": await run_in_threadpool(test_connection, cfg, secrets)}
+    except (TicketError, ValidationError, OSError) as e:
+        return {"ok": False, "message": str(e)[:300]}

@@ -17,6 +17,7 @@ x-backend-env: &backend-env
   SCAN_TIMEOUT_SECONDS: ${SCAN_TIMEOUT_SECONDS:-1800}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5-5}
+  APP_URL: ${APP_URL:-}
 
 services:
   db:
