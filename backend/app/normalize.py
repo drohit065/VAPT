@@ -342,6 +342,63 @@ def parse_gitleaks(data: list, root: str | None = None) -> list[dict]:
     return out
 
 
+# ---------------------------------------------------------------- Nuclei (live URLs)
+
+NUCLEI_SEV = {"critical": "Critical", "high": "High", "medium": "Medium", "low": "Low"}
+
+
+def _mask_extracted(value: str) -> str:
+    """Extracted values can be tokens or keys from an exposed file: keep only a short prefix."""
+    value = str(value).strip()
+    return value if len(value) <= 16 else value[:4] + "…(redacted)"
+
+
+def parse_nuclei(results: list[dict]) -> list[dict]:
+    """Nuclei JSONL records -> findings. 'info' and unknown severities are skipped."""
+    out = []
+    for r in results or []:
+        if not isinstance(r, dict):
+            continue
+        info = r.get("info") or {}
+        sev = NUCLEI_SEV.get(str(info.get("severity", "")).lower())
+        if sev is None:
+            continue
+        cls = info.get("classification") or {}
+        cwe_raw = _first(cls.get("cwe-id"))
+        cwe = f"CWE-{cwe_number(cwe_raw)}" if cwe_number(cwe_raw) is not None else None
+        cve = _first(cls.get("cve-id"))
+        template = r.get("template-id") or ""
+        name = info.get("name") or template or "Nuclei finding"
+        title = name + (f" ({str(cve).upper()})" if cve and str(cve).upper() not in name.upper() else "")
+        matched = r.get("matched-at") or r.get("host") or r.get("url") or ""
+        evidence = [f"Matched at: {matched}"]
+        if r.get("matcher-name"):
+            evidence.append(f"Matcher: {r['matcher-name']}")
+        extracted = r.get("extracted-results") or []
+        if extracted:
+            evidence.append("Extracted: " + ", ".join(_mask_extracted(x) for x in extracted[:5]))
+        refs = info.get("reference") or []
+        if isinstance(refs, str):
+            refs = [refs]
+        desc = (info.get("description") or "").strip() or f"The target matched the Nuclei template '{template}'."
+        if refs:
+            desc += "\n\nReferences:\n" + "\n".join(f"- {x}" for x in refs[:5])
+        out.append(make_finding(
+            severity=sev,
+            title=title,
+            file_path=matched,
+            line=None,
+            snippet=mask_assignments("\n".join(evidence)),
+            description=desc,
+            check="nuclei",
+            scanner="nuclei",
+            rule_id=template or None,
+            cwe=cwe,
+            recommendation=info.get("remediation"),
+        ))
+    return out
+
+
 # ---------------------------------------------------------------- de-duplication
 
 

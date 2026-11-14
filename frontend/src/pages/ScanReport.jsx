@@ -8,6 +8,8 @@ const CHECK_LABELS = {
   deps: 'Dependencies',
   secrets: 'Secrets',
   iac: 'Docker / Terraform',
+  web: 'Web checks',
+  nuclei: 'Nuclei',
 }
 
 function Finding({ f, open, onToggle }) {

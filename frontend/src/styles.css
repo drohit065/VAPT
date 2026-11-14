@@ -232,3 +232,12 @@ input[type=file] { font: inherit; max-width: 100%; }
 .sevbar-legend { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 8px; color: var(--muted); }
 .sevbar-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
 tr.current td { background: #eef5f6; }
+
+.field textarea {
+  width: 100%; font-family: var(--mono); font-size: 13px; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: #fff; color: var(--text); resize: vertical;
+}
+.field textarea:focus { outline: 2px solid var(--teal); outline-offset: -1px; }
+.consent { display: flex; gap: 10px; align-items: flex-start; font-weight: 500; cursor: pointer; }
+.consent input { margin-top: 4px; accent-color: var(--teal); }
+.segmented { flex-wrap: wrap; }

@@ -24,6 +24,7 @@ from ..normalize import (
     count_by_severity,
     dedupe,
     parse_gitleaks,
+    parse_nuclei,
     parse_semgrep,
     parse_trivy_config,
     parse_trivy_vulns,
@@ -31,6 +32,7 @@ from ..normalize import (
     secret_values,
 )
 from ..security import decrypt_token, scrub
+from . import dast
 from . import detect as detect_mod
 from .fetch import FetchError, clone, extract_zip, remove_tree, single_top_dir
 
@@ -44,8 +46,11 @@ CHECK_STEPS = [
     ("deps", "Vulnerable dependencies (Trivy)"),
     ("secrets", "Hardcoded secrets (Gitleaks)"),
     ("iac", "Docker and Terraform files (Trivy config)"),
+    ("web", "Web security checks (headers, TLS, cookies, CORS, exposed files)"),
+    ("nuclei", "Known vulnerabilities and misconfigurations (Nuclei)"),
     ("ai", "AI review (Claude)"),
 ]
+NUCLEI_TEMPLATES = os.path.join(CACHE_DIR, "nuclei-templates")
 
 
 def now():
@@ -196,6 +201,70 @@ def check_iac(src, out_dir, home, budget):
                       else "No Dockerfiles or Terraform files found")
 
 
+def ensure_nuclei_templates(out_dir, home, budget) -> str:
+    """Download / refresh the Nuclei templates at most once a day into the shared cache."""
+    marker = os.path.join(NUCLEI_TEMPLATES, ".vapt-updated")
+    if os.path.exists(marker) and time.time() - os.path.getmtime(marker) < 86400:
+        return ""
+    have_old = os.path.isdir(os.path.join(NUCLEI_TEMPLATES, "http"))
+    try:
+        proc = run_tool(["nuclei", "-update-templates", "-update-template-dir", NUCLEI_TEMPLATES,
+                         "-silent", "-nc"], out_dir, home, min(budget, 900))
+        ok = proc.returncode == 0 and os.path.isdir(os.path.join(NUCLEI_TEMPLATES, "http"))
+        err = _tail(proc.stderr or proc.stdout)
+    except TimeoutError as e:
+        ok, err = False, str(e)
+    if ok:
+        with open(marker, "w") as fh:
+            fh.write(str(time.time()))
+        return ""
+    if have_old:
+        return " (templates could not be updated; cached templates were used)"
+    raise RuntimeError(f"Could not download Nuclei templates: {err}")
+
+
+def check_nuclei(urls, out_dir, home, budget):
+    started = time.monotonic()
+    note = ensure_nuclei_templates(out_dir, home, budget)
+    budget -= time.monotonic() - started
+    targets = os.path.join(out_dir, "targets.txt")
+    with open(targets, "w") as fh:
+        fh.write("\n".join(urls) + "\n")
+    out = os.path.join(out_dir, "nuclei.jsonl")
+    cmd = ["nuclei", "-l", targets, "-t", NUCLEI_TEMPLATES,
+           "-pt", "http,ssl",                     # web templates only: no network/code/file/headless
+           "-s", "low,medium,high,critical",
+           "-etags", "dos,fuzz,intrusive,bruteforce,brute-force,osint,headless",
+           "-ni",                                 # no interactsh: never call out to third-party OAST servers
+           "-dr",                                 # never follow redirects (could point at internal hosts)
+           "-duc", "-nc", "-silent", "-or", "-jsonl", "-o", out,
+           "-timeout", "10", "-retries", "1", "-rl", "30", "-c", "10", "-bs", "10",
+           "-H", f"User-Agent: {dast.USER_AGENT}"]
+    timed_out = False
+    proc = None
+    try:
+        proc = run_tool(cmd, out_dir, home, budget - 5)
+    except TimeoutError:
+        timed_out = True
+    results = []
+    if os.path.exists(out):
+        with open(out, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    try:
+                        results.append(json.loads(line))
+                    except ValueError:
+                        pass
+    if proc is not None and proc.returncode != 0 and not results:
+        raise RuntimeError(f"Nuclei failed: {_tail(proc.stderr)}")
+    findings = parse_nuclei(results)
+    detail = f"{len(findings)} issue(s) on {len(urls)} target(s)" + note
+    if timed_out:
+        detail += " (stopped at the time limit; results are partial)"
+    return findings, detail
+
+
 # ---------------------------------------------------------------- main entry
 
 
@@ -223,7 +292,10 @@ def run_scan(scan_id: int) -> None:
 
     try:
         checks = scan.checks or {}
-        plan = [("fetch", "Fetching code"), ("detect", "Detecting languages and frameworks")]
+        is_url = scan.project.source_type == "url"
+        plan = [("fetch", "Connecting to targets" if is_url else "Fetching code")]
+        if not is_url:
+            plan.append(("detect", "Detecting languages and frameworks"))
         plan += [(k, l) for k, l in CHECK_STEPS if checks.get(k)]
         plan += [("report", "Building report")]
         steps.init(plan)
@@ -243,6 +315,21 @@ def run_scan(scan_id: int) -> None:
             scan_root = src_dir
             has_git = True
             steps.finish("fetch", detail=f"Cloned {info['branch'] or 'default branch'} @ {(info['commit'] or '')[:12]}")
+        elif is_url:
+            steps.start("fetch", "Resolving and connecting to targets")
+            targets = []
+            for u in project.source.splitlines():
+                try:
+                    targets.append(dast.probe(u))
+                except dast.TargetError as e:
+                    notes.append(f"Skipped target: {e}")
+            if not targets:
+                raise FetchError("None of the targets could be reached. " + " ".join(notes[-5:]))
+            scan.languages = []
+            scan.frameworks = sorted({x for t in targets for x in dast.detect_tech(t.resp)})
+            db.commit()
+            scan_root, has_git = None, False
+            steps.finish("fetch", detail="; ".join(f"{t.url} -> HTTP {t.resp.status}" for t in targets)[:500])
         else:
             steps.start("fetch", "Extracting archive")
             if not scan.upload_path or not os.path.isfile(scan.upload_path):
@@ -257,12 +344,13 @@ def run_scan(scan_id: int) -> None:
             steps.finish("fetch", detail=detail)
 
         # 2. detect
-        steps.start("detect")
-        found = detect_mod.detect(scan_root)
-        scan.languages, scan.frameworks = found["languages"], found["frameworks"]
-        db.commit()
-        langs = ", ".join(l["name"] for l in found["languages"][:6]) or "none recognised"
-        steps.finish("detect", detail=langs)
+        if not is_url:
+            steps.start("detect")
+            found = detect_mod.detect(scan_root)
+            scan.languages, scan.frameworks = found["languages"], found["frameworks"]
+            db.commit()
+            langs = ", ".join(l["name"] for l in found["languages"][:6]) or "none recognised"
+            steps.finish("detect", detail=langs)
 
         # 3. checks
         all_findings: list[dict] = []
@@ -272,6 +360,9 @@ def run_scan(scan_id: int) -> None:
             "deps": lambda: check_deps(scan_root, out_dir, home, budget()),
             "secrets": lambda: check_secrets(scan_root, out_dir, home, budget(), has_git),
             "iac": lambda: check_iac(scan_root, out_dir, home, budget()),
+            "web": lambda: (lambda f: (f, f"{len(f)} issue(s) on {len(targets)} target(s)"))(
+                dast.run_web_checks(targets, budget)),
+            "nuclei": lambda: check_nuclei([t.url for t in targets], out_dir, home, budget()),
         }
         for key, _label in CHECK_STEPS:
             if not checks.get(key):

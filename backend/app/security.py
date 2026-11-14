@@ -66,6 +66,86 @@ def assert_public_host(url: str) -> None:
             raise ValidationError("The repository host resolves to a private or internal address.")
 
 
+# ---------------------------------------------------------------- Live URL targets (DAST)
+
+MAX_TARGETS = 5
+
+
+def validate_target_url(url: str) -> str:
+    """Return a normalised http(s) URL for a live scan target or raise ValidationError.
+
+    Host names and public IP literals are allowed; credentials, fragments, whitespace and
+    control characters are not. Never passed to a shell.
+    """
+    url = (url or "").strip()
+    if not url or len(url) > 2000:
+        raise ValidationError("Enter a target URL.")
+    if any(not (0x21 <= ord(c) <= 0x7E) for c in url):
+        raise ValidationError(f"The URL contains spaces or characters that are not allowed: {url[:100]}")
+    parts = urlsplit(url)
+    if parts.scheme.lower() not in ("http", "https"):
+        raise ValidationError(f"Only http:// and https:// URLs can be scanned: {url[:100]}")
+    if parts.username or parts.password or "@" in parts.netloc:
+        raise ValidationError("Do not put credentials in the URL.")
+    host = (parts.hostname or "").lower()
+    if not host:
+        raise ValidationError(f"The URL must contain a host name: {url[:100]}")
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        ip = None
+    if ip is not None:
+        if not ip.is_global:
+            raise ValidationError("Private, loopback and link-local addresses cannot be scanned.")
+    elif not _HOST_RE.match(host) or host.startswith("-") or "." not in host:
+        raise ValidationError(f"The URL must contain a valid host name: {url[:100]}")
+    port = parts.port  # raises ValueError on garbage
+    scheme = parts.scheme.lower()
+    default = 443 if scheme == "https" else 80
+    hostpart = f"[{host}]" if ip is not None and ip.version == 6 else host
+    netloc = hostpart if port in (None, default) else f"{hostpart}:{port}"
+    return urlunsplit((scheme, netloc, parts.path or "/", parts.query, ""))
+
+
+def validate_targets(raw: str | None) -> list[str]:
+    """One URL per line (or comma separated), de-duplicated, at most MAX_TARGETS."""
+    items = [x.strip() for x in re.split(r"[\n,]", raw or "") if x.strip()]
+    if not items:
+        raise ValidationError("Enter at least one URL to scan.")
+    urls: list[str] = []
+    for item in items:
+        u = validate_target_url(item)
+        if u not in urls:
+            urls.append(u)
+    if len(urls) > MAX_TARGETS:
+        raise ValidationError(f"Scan at most {MAX_TARGETS} URLs at a time.")
+    return urls
+
+
+def assert_public_target(url: str) -> list[str]:
+    """Resolve the target and return its addresses; refuse anything non-public (SSRF guard)."""
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        raise ValidationError(f"Could not resolve host {host}.")
+    ips: list[str] = []
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if not ip.is_global:
+            raise ValidationError(f"{host} resolves to a private or internal address; it cannot be scanned.")
+        if str(ip) not in ips:
+            ips.append(str(ip))
+    return ips
+
+
+def target_project_name(urls: list[str]) -> str:
+    first = urlsplit(urls[0]).hostname or "website"
+    return first if len(urls) == 1 else f"{first} (+{len(urls) - 1})"
+
+
 def validate_branch(branch: str | None) -> str | None:
     branch = (branch or "").strip()
     if not branch:

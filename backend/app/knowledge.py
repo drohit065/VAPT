@@ -136,6 +136,12 @@ CHECK_DEFAULTS = {
     "iac": (A05,
             "The insecure configuration weakens the deployed environment and can be abused once the infrastructure is built from it.",
             "Apply the configuration change described in the resolution."),
+    "web": (A05,
+            "The live site's configuration exposes information or weakens browser protections an attacker can rely on.",
+            "Change the web server or application configuration as described."),
+    "nuclei": (A05,
+               "The running service matches a known vulnerability or misconfiguration pattern that attackers scan for automatically.",
+               "Apply the vendor fix or configuration change referenced in the finding, then re-scan."),
 }
 
 

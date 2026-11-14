@@ -9,6 +9,8 @@ export default function NewScan() {
   const [branch, setBranch] = useState('')
   const [token, setToken] = useState('')
   const [file, setFile] = useState(null)
+  const [targets, setTargets] = useState('')
+  const [authorized, setAuthorized] = useState(false)
   const [checks, setChecks] = useState({})
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -28,16 +30,26 @@ export default function NewScan() {
       setError('Enter an https:// Git repository URL.'); return
     }
     if (mode === 'zip' && !file) { setError('Choose a .zip file.'); return }
+    if (mode === 'url') {
+      const list = targets.split(/[\n,]/).map(t => t.trim()).filter(Boolean)
+      if (!list.length) { setError('Enter at least one URL.'); return }
+      if (list.some(t => !/^https?:\/\//i.test(t))) { setError('Every URL must start with http:// or https://'); return }
+      if (!authorized) { setError('Confirm that you are authorised to test these targets.'); return }
+    }
     if (mode === 'zip' && meta && file.size > meta.max_upload_mb * 1024 * 1024) {
       setError(`The zip is larger than ${meta.max_upload_mb} MB.`); return
     }
     const form = new FormData()
     form.append('source_type', mode)
-    form.append('checks', JSON.stringify(checks))
+    form.append('checks', JSON.stringify(Object.fromEntries(
+      Object.entries(checks).filter(([k]) => visibleKeys.includes(k)))))
     if (mode === 'git') {
       form.append('repo_url', url.trim())
       if (branch.trim()) form.append('branch', branch.trim())
       if (token.trim()) form.append('token', token.trim())
+    } else if (mode === 'url') {
+      form.append('target_urls', targets)
+      form.append('authorized', authorized ? 'true' : 'false')
     } else {
       form.append('file', file)
     }
@@ -52,12 +64,19 @@ export default function NewScan() {
     }
   }
 
+  const visible = (meta?.checks || []).filter(c => !c.sources || c.sources.includes(mode))
+  const visibleKeys = visible.map(c => c.key)
+
   return (
     <>
       <div className="page-head">
         <div>
           <h1>New scan</h1>
-          <div className="muted">Code is cloned or unzipped into a temporary folder, read by the scanners, then deleted. It is never built, run or changed.</div>
+          <div className="muted">
+            {mode === 'url'
+              ? 'Live targets receive ordinary HTTP requests from the scanner. Nothing is changed on the target.'
+              : 'Code is cloned or unzipped into a temporary folder, read by the scanners, then deleted. It is never built, run or changed.'}
+          </div>
         </div>
       </div>
       {error && <div className="error">{error}</div>}
@@ -67,6 +86,7 @@ export default function NewScan() {
           <div className="segmented" role="tablist">
             <button type="button" role="tab" aria-selected={mode === 'git'} className={mode === 'git' ? 'on' : ''} onClick={() => setMode('git')}>Git repository</button>
             <button type="button" role="tab" aria-selected={mode === 'zip'} className={mode === 'zip' ? 'on' : ''} onClick={() => setMode('zip')}>Zip upload</button>
+            <button type="button" role="tab" aria-selected={mode === 'url'} className={mode === 'url' ? 'on' : ''} onClick={() => setMode('url')}>Website / API</button>
           </div>
 
           {mode === 'git' ? (
@@ -92,6 +112,23 @@ export default function NewScan() {
                 The token is encrypted while the scan waits in the queue, used once to clone, then deleted. It is never shown again or written to logs.
               </p>
             </>
+          ) : mode === 'url' ? (
+            <>
+              <div className="field">
+                <label htmlFor="targets">Target URLs <span className="muted small">(one per line, up to 5: e.g. frontend and backend API)</span></label>
+                <textarea id="targets" className="mono" rows={4}
+                          placeholder={'https://app.example.com\nhttps://api.example.com/health'}
+                          value={targets} onChange={e => setTargets(e.target.value)} />
+              </div>
+              <label className="consent">
+                <input type="checkbox" checked={authorized} onChange={e => setAuthorized(e.target.checked)} />
+                <span>I own these targets or have written permission to security-test them.</span>
+              </label>
+              <p className="muted small" style={{ margin: '8px 0 0' }}>
+                Sends a few thousand requests per target (rate-limited to 30/s). Destructive, brute-force and fuzzing
+                tests are excluded. Private and internal addresses are blocked. Run against staging first if you can.
+              </p>
+            </>
           ) : (
             <div className="field">
               <label htmlFor="zip">Zip archive</label>
@@ -104,7 +141,7 @@ export default function NewScan() {
         <div className="card">
           <h2>Checks</h2>
           {!meta && <div className="muted">Loading…</div>}
-          {meta?.checks.map(c => {
+          {visible.map(c => {
             const disabled = c.key === 'ai' && !meta.ai_available
             return (
               <label key={c.key} className={`switch-row${disabled ? ' disabled' : ''}`}>

@@ -1,6 +1,7 @@
 # Scanner binaries are copied from their official, version-pinned images (multi-arch: amd64 + arm64).
 FROM aquasec/trivy:0.58.1 AS trivy
 FROM zricethezav/gitleaks:v8.21.2 AS gitleaks
+FROM projectdiscovery/nuclei:v3.11.1 AS nuclei
 
 FROM python:3.12-slim
 
@@ -17,6 +18,7 @@ RUN python -m venv /opt/semgrep \
 
 COPY --from=trivy /usr/local/bin/trivy /usr/local/bin/trivy
 COPY --from=gitleaks /usr/bin/gitleaks /usr/local/bin/gitleaks
+COPY --from=nuclei /usr/local/bin/nuclei /usr/local/bin/nuclei
 
 WORKDIR /app
 COPY requirements.txt .

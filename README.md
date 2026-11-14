@@ -1,10 +1,13 @@
 # VAPT Scanner
 
-A self-hosted source-code security scanner with a web dashboard.
+A self-hosted security scanner with a web dashboard: static analysis of source code (SAST) and
+scanning of live websites and APIs (DAST).
 
 It **only reads and reports**. It never builds, executes, modifies or auto-fixes the code it
 scans. Code is cloned or unzipped into a temporary folder per scan, read by static analysers,
-and the folder is deleted when the scan ends.
+and the folder is deleted when the scan ends. Live targets only receive ordinary HTTP requests.
+
+**Source code** (Git repository or zip upload):
 
 | Check (switchable per scan) | Tool |
 |---|---|
@@ -14,13 +17,34 @@ and the folder is deleted when the scan ends.
 | Docker and Terraform files | Trivy `config` |
 | AI review (off by default) | Claude API: filters false positives, finds logic flaws (Phase 4) |
 
+**Website / API** (up to 5 live URLs per scan, e.g. a frontend and its backend API):
+
+| Check (switchable per scan) | Tool |
+|---|---|
+| Web security checks: security headers, cookie flags, TLS certificate and protocol, HTTP→HTTPS redirect, CORS, TRACE, exposed files (`/.git`, `/.env`, Spring Actuator, server-status, phpinfo, directory listing, Swagger/OpenAPI) | Built in |
+| Known CVEs and misconfigurations | Nuclei (community templates, refreshed daily) |
+
+### Live URL scanning: rules
+
+* **Only scan targets you own or have written permission to test.** The New scan form requires
+  you to confirm this, and the confirmation is recorded on the scan.
+* Private, loopback and link-local addresses (including cloud metadata `169.254.169.254`) are
+  refused. Every built-in request is pinned to an address checked as public, and redirects are
+  never followed, so a target cannot bounce the scanner into your internal network.
+* Nuclei runs HTTP and SSL templates only, at 30 requests/second, with `dos`, `fuzz`,
+  `intrusive` and brute-force templates excluded and interactsh (out-of-band callbacks to
+  third-party servers) disabled. Expect a few thousand requests and a few minutes per target.
+  Prefer a staging environment, and tell whoever monitors the target's WAF / logs.
+* On EC2, require IMDSv2 with a hop limit of 1 (EC2 console → instance → Actions → Instance
+  settings → Modify instance metadata options) so no container can reach instance credentials.
+
 ## Architecture
 
 ```
 browser ──► frontend (nginx, React)  :HTTP_PORT ─┐
                  │ /api                           │ only this port is published
                  ▼                                │
-            backend (FastAPI) ──► db (PostgreSQL) ◄── worker (Semgrep, Trivy, Gitleaks)
+            backend (FastAPI) ──► db (PostgreSQL) ◄── worker (Semgrep, Trivy, Gitleaks, Nuclei)
                  │                                     ▲
                  └──── uploads volume (zip files) ─────┘
 ```
@@ -43,7 +67,7 @@ Open **one inbound port: TCP 80** (or whatever you set `HTTP_PORT` to), plus TCP
 > reverse proxy.
 
 Outbound HTTPS (443) must be allowed: the worker downloads Semgrep rules (`semgrep.dev`),
-the Trivy vulnerability database (`mirror.gcr.io` / `ghcr.io`) and clones Git repositories.
+the Trivy vulnerability database (`mirror.gcr.io` / `ghcr.io`), Nuclei templates (`github.com`), clones Git repositories and reaches the live targets you scan (HTTP/HTTPS).
 
 ### 2. Install Docker
 
