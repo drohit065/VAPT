@@ -208,3 +208,16 @@ Frontend dev server (proxies `/api` to `localhost:8000`):
 ```bash
 cd frontend && npm install && npm run dev
 ```
+
+## CI/CD integration
+
+1. **Settings → API keys & CI/CD**: create a key with the *analyst* role (shown once; only its hash is stored).
+2. Add repository secrets `VAPT_URL` (this dashboard, reachable from the CI runner over HTTPS) and `VAPT_API_KEY`.
+3. Copy [`ci/github-actions-example.yml`](ci/github-actions-example.yml) to `.github/workflows/vapt.yml`.
+
+[`ci/vapt-scan.sh`](ci/vapt-scan.sh) (needs `curl` and `jq`) zips the checked-out code with `git archive` (or scans a
+Git URL, live URL or container image), waits for the scan and calls the quality gate
+`GET /api/scans/{id}/gate?fail_on=High&new_only=false`: exit code `0` passed, `1` blocking findings, `2` error.
+With `VAPT_SARIF=vapt.sarif` it also downloads SARIF for GitHub code scanning. Pull requests can use
+`VAPT_NEW_ONLY=true` so only findings introduced since the previous scan block the merge. Findings triaged as
+false positive or accepted risk never block.

@@ -121,3 +121,49 @@ def test_notification_settings_secrets_are_write_only(client):
     assert client.put("/api/settings/notifications", headers=admin, json={**body, "email_to": ["nope"]}).status_code == 400
     assert client.put("/api/settings/notifications", headers=admin,
                       json={**body, "slack_url": "http://insecure.example.com/x"}).status_code == 400
+
+
+def test_api_keys_and_gate(client):
+    admin = hdr(login(client, "admin", "builtin-admin-password-123").json()["access_token"])
+    assert client.post("/api/api-keys", headers=admin, json={"name": "ci", "role": "admin"}).status_code == 400
+    r = client.post("/api/api-keys", headers=admin, json={"name": "github-ci", "role": "analyst", "expires_days": 30})
+    assert r.status_code == 200
+    key = r.json()["key"]
+    assert key.startswith("vapt_") and r.json()["prefix"] == key[:12]
+    k = hdr(key)
+    assert client.get("/api/projects", headers=k).status_code == 200
+    assert client.get("/api/users", headers=k).status_code == 403          # analyst role, not admin
+    assert client.get("/api/scans/999/gate", headers=k).status_code == 404
+    listed = client.get("/api/api-keys", headers=admin).json()
+    assert key not in str(listed) and listed[0]["last_used_at"]
+    assert client.delete(f"/api/api-keys/{listed[0]['id']}", headers=admin).json()["revoked"] is True
+    assert client.get("/api/projects", headers=k).status_code == 401
+    assert client.get("/api/projects", headers=hdr("vapt_not-a-real-key")).status_code == 401
+    log = client.get("/api/audit", headers=admin).json()
+    assert "api_key_created" in [e["action"] for e in log] and key not in str(log)
+
+
+def test_gate_logic():
+    from types import SimpleNamespace
+
+    from app.routers import scans as s
+    from app.db import SessionLocal
+    from app.models import Finding, Project, Scan
+    db = SessionLocal()
+    p = Project(name="gate", source_type="zip", source="gate.zip")
+    db.add(p)
+    db.flush()
+    sc = Scan(project_id=p.id, status="completed", counts={"Critical": 0, "High": 1, "Medium": 1, "Low": 0})
+    db.add(sc)
+    db.flush()
+    for sev, new, st in (("High", False, "open"), ("Medium", True, "open"), ("Critical", True, "false_positive")):
+        db.add(Finding(scan_id=sc.id, severity=sev, title=f"{sev} issue", file_path="a.py", check="code",
+                       snippet="", description="", exploitation="", recommendation="", scanners=["semgrep"],
+                       is_new=new, status=st))
+    db.commit()
+    assert s.quality_gate(sc.id, "High", False, db)["passed"] is False      # the open High blocks
+    assert s.quality_gate(sc.id, "High", True, db)["passed"] is True        # new-only: High is not new
+    assert s.quality_gate(sc.id, "Medium", True, db)["blocking"] == 1       # the new Medium blocks
+    assert s.quality_gate(sc.id, "none", False, db)["passed"] is True
+    db.close()
+    assert SimpleNamespace

@@ -155,6 +155,8 @@ def _unauthorized():
 def require_user(creds: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> CurrentUser:
     if creds is None or creds.scheme.lower() != "bearer":
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated")
+    if creds.credentials.startswith(API_KEY_PREFIX):
+        return _api_key_user(creds.credentials)
     s = get_settings()
     try:
         payload = jwt.decode(creds.credentials, s.jwt_secret, algorithms=[ALGORITHM])
@@ -241,3 +243,35 @@ def revoke(creds_token: str) -> None:
 
 def is_revoked(payload: dict) -> bool:
     return bool(payload.get("jti")) and payload["jti"] in _revoked
+
+
+# ---------------------------------------------------------------- API keys (CI/CD, scripts)
+
+API_KEY_PREFIX = "vapt_"
+
+
+def new_api_key() -> tuple[str, str, str]:
+    """(full key shown once, display prefix, sha256 hash stored)."""
+    key = API_KEY_PREFIX + base64.urlsafe_b64encode(os.urandom(30)).decode().rstrip("=")
+    return key, key[:12], hashlib.sha256(key.encode()).hexdigest()
+
+
+def _api_key_user(key: str) -> CurrentUser:
+    from .models import ApiKey
+
+    digest = hashlib.sha256(key.encode()).hexdigest()
+    db = SessionLocal()
+    try:
+        k = db.scalar(select(ApiKey).where(ApiKey.key_hash == digest))
+        now = datetime.now(timezone.utc)
+        exp = k.expires_at.replace(tzinfo=timezone.utc) if k and k.expires_at and k.expires_at.tzinfo is None \
+            else (k.expires_at if k else None)
+        if k is None or k.revoked or (exp is not None and exp < now):
+            raise _unauthorized()
+        if k.last_used_at is None or (now - (k.last_used_at if k.last_used_at.tzinfo else
+                                             k.last_used_at.replace(tzinfo=timezone.utc))).total_seconds() > 60:
+            k.last_used_at = now
+            db.commit()
+        return CurrentUser(f"api-key:{k.name}", k.role)
+    finally:
+        db.close()

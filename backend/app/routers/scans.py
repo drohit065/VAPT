@@ -484,3 +484,37 @@ async def create_tickets(scan_id: int, body: BulkTicketsIn, request: Request, db
         audit(user.username, "ticket_created", f"scan {scan.id}", {"count": len(created), "provider": cfg["provider"]},
               client_ip(request))
     return {"created": created, "errors": errors, "remaining": max(0, len(todo) - len(created))}
+
+
+# ---------------------------------------------------------------- CI/CD quality gate
+
+
+@router.get("/scans/{scan_id}/gate")
+def quality_gate(scan_id: int, fail_on: str = "High", new_only: bool = False, db: Session = Depends(get_db)):
+    """For CI pipelines: passed=false when an open finding at or above `fail_on` exists
+    (only findings new since the previous scan when new_only=true)."""
+    from ..findings_mgmt import SUPPRESSED
+    from ..normalize import SEVERITY_ORDER
+    from ..ticketing import app_url
+    if fail_on not in SEVERITY_ORDER and fail_on != "none":
+        raise HTTPException(400, "fail_on must be Critical, High, Medium, Low or none")
+    scan = db.get(Scan, scan_id)
+    if not scan:
+        raise HTTPException(404, "Scan not found")
+    if scan.status in ("queued", "running"):
+        return {"scan_id": scan.id, "status": scan.status, "passed": None, "done": False}
+    url = f"{app_url().rstrip('/')}/scans/{scan.id}/report" if app_url() else None
+    if scan.status == "failed":
+        return {"scan_id": scan.id, "status": "failed", "passed": False, "done": True, "error": scan.error,
+                "report_url": url}
+    blocking = [] if fail_on == "none" else [
+        f for f in scan.findings if f.status not in SUPPRESSED and SEVERITY_ORDER[f.severity] <= SEVERITY_ORDER[fail_on]
+        and (f.is_new or not new_only)]
+    return {
+        "scan_id": scan.id, "status": "completed", "done": True, "passed": not blocking,
+        "fail_on": fail_on, "new_only": new_only, "counts": scan.counts, "blocking": len(blocking),
+        "blocking_findings": [{"severity": f.severity, "title": f.title, "location": f.file_path
+                               + (f":{f.line}" if f.line else "")} for f in sorted(
+                                   blocking, key=lambda f: SEVERITY_ORDER[f.severity])[:20]],
+        "report_url": url,
+    }

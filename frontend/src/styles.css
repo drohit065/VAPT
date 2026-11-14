@@ -309,3 +309,8 @@ table.list select { width: auto; }
 .form-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 24px; }
 .ticket-link { display: inline-block; font-weight: 600; color: var(--teal); background: #e4f3ef; padding: 3px 10px; border-radius: 6px; text-decoration: none; }
 .inline-error { display: inline-block; margin-left: 10px; padding: 4px 8px; }
+.key-created { border-color: var(--teal); background: #f2faf8; }
+.key-value { flex: 1; font-family: var(--mono); font-size: 13px; background: #fff; border: 1px solid var(--border);
+  border-radius: 6px; padding: 8px 10px; word-break: break-all; }
+.code-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+tr.revoked td { opacity: 0.55; }

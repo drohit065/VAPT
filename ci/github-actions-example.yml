@@ -1,0 +1,40 @@
+# Copy to .github/workflows/vapt.yml in the repository you want to scan.
+# Repository secrets: VAPT_URL (dashboard address, reachable from GitHub runners)
+#                     VAPT_API_KEY (Settings -> API keys & CI/CD, analyst role)
+name: VAPT security scan
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write   # upload SARIF to the Security tab
+
+jobs:
+  vapt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan with VAPT Scanner
+        env:
+          VAPT_URL: ${{ secrets.VAPT_URL }}
+          VAPT_API_KEY: ${{ secrets.VAPT_API_KEY }}
+          VAPT_SOURCE: zip                 # zip | git | url | image
+          VAPT_FAIL_ON: High               # fail the job on open High or Critical findings
+          VAPT_NEW_ONLY: ${{ github.event_name == 'pull_request' }}   # PRs: only block on new findings
+          VAPT_SARIF: vapt.sarif
+        # Pin the client to a release tag or commit of the VAPT repository (or copy ci/vapt-scan.sh into your repo).
+        run: |
+          curl -fsSLo vapt-scan.sh https://raw.githubusercontent.com/drohit065/VAPT/main/ci/vapt-scan.sh
+          bash vapt-scan.sh
+
+      - name: Upload results to GitHub code scanning
+        if: always() && hashFiles('vapt.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: vapt.sarif
+          category: vapt-scanner
