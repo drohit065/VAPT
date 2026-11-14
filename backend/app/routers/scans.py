@@ -16,6 +16,7 @@ from ..models import Finding, Project, Scan
 from ..security import (
     ValidationError,
     assert_public_host,
+    assert_public_target,
     canonical_repo_source,
     encrypt_token,
     project_name_from_url,
