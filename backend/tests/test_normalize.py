@@ -146,7 +146,7 @@ def test_gitleaks_never_contains_secret():
     [f] = parse_gitleaks(GITLEAKS)
     blob = repr(f)
     assert "AKIAZZZZZZZZZZZZZZZZ" not in blob
-    assert "REDACTED" in f["snippet"]
+    assert "AKIA" in f["snippet"] and "ZZZZ fp:" in f["snippet"]  # first 4 + last 4 + fingerprint
     assert f["severity"] == "Critical"  # cloud key
     assert f["cwe"].startswith("CWE-798")
     assert "abcdef123456" in f["description"]
@@ -173,7 +173,7 @@ def test_secret_redacted_from_other_scanners():
 ])
 def test_mask_assignments(text, leaked):
     assert leaked not in mask_assignments(text)
-    assert "REDACTED" in mask_assignments(text)
+    assert "fp:" in mask_assignments(text)
 
 
 def test_mask_keeps_code_readable():

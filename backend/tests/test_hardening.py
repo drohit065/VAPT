@@ -22,7 +22,7 @@ def test_mask_secret_snippet_hides_literals_and_tokens():
     snippet = '12 | const k = "ghp_abcdefghijklmnopqrstuvwxyz123456";\n13 | client(KEY=AKIAABCDEFGHIJKLMNOPQRST)'
     out = mask_secret_snippet(snippet)
     assert "ghp_abc" not in out and "AKIAABCDEFGH" not in out
-    assert out.startswith("12 | const k = ") and "13 | client(KEY=REDACTED)" in out
+    assert out.startswith("12 | const k = \"ghp_") and "13 | client(KEY=AKIA" in out and out.count("fp:") == 2
 
 
 def test_semgrep_secret_rule_masked_without_gitleaks():
@@ -33,5 +33,5 @@ def test_semgrep_secret_rule_masked_without_gitleaks():
                          snippet='1 | q = "SELECT * FROM users WHERE id=" + uid', description="",
                          check="code", scanner="semgrep", rule_id="python.lang.security.sqli")
     redact_findings([f, other], secrets=[])
-    assert "ghp_" not in f["snippet"]
+    assert "abcdefghijklmnop" not in f["snippet"] and "fp:" in f["snippet"]  # only first 4 + last 4 shown
     assert "SELECT * FROM users" in other["snippet"]  # ordinary code stays readable

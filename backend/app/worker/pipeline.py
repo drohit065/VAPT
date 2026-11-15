@@ -486,7 +486,7 @@ def run_scan(scan_id: int) -> None:
 
         # 3. checks
         all_findings: list[dict] = []
-        secrets: list[str] = []
+        secrets: dict[str, str] = {}
 
         def run_zap():
             found, detail, zap_notes = zap_mod.run(
@@ -552,7 +552,9 @@ def run_scan(scan_id: int) -> None:
 
         # 4. report
         steps.start("report")
-        redact_findings(all_findings, secrets + sorted(secret_values_auth, key=len, reverse=True))
+        # Credentials found in the code are shown partially + fingerprint; the operator's own scan
+        # credentials (login headers, registry login) are never shown at all.
+        redact_findings(all_findings, {**secrets, **{v: "REDACTED" for v in secret_values_auth if v}})
         secrets = []
         final = dedupe(all_findings)
         previous = db.scalars(

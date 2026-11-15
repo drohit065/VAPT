@@ -23,6 +23,7 @@ import os
 import re
 
 from .knowledge import cwe_number, lookup
+from .secret_display import display, display_url_password, is_masked, is_password
 
 SEVERITY_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
 MAX_TEXT = 4000
@@ -285,16 +286,26 @@ def gitleaks_severity(rule_id: str) -> str:
     return "Critical" if rid.startswith(CRITICAL_SECRET_PREFIXES) else "High"
 
 
-def secret_values(data: list) -> list[str]:
-    """Raw secret strings from an un-redacted Gitleaks report (kept in memory only)."""
-    vals = {str(g.get("Secret") or "") for g in data or []}
-    return sorted((v for v in vals if len(v) >= 4 and v != "REDACTED"), key=len, reverse=True)
+def secret_values(data: list) -> dict[str, str]:
+    """Raw secret -> how it is shown (secret_display rules), from an un-redacted Gitleaks report.
+    Raw values are kept in memory only, for masking."""
+    out: dict[str, str] = {}
+    for g in data or []:
+        v = str(g.get("Secret") or "")
+        if len(v) >= 4 and v != "REDACTED" and v not in out:
+            out[v] = display(v, rule_id=g.get("RuleID") or "")
+    return out
 
 
-def redact(text: str, secrets: list[str]) -> str:
-    for v in secrets:
-        if v and v in (text or ""):
-            text = text.replace(v, "REDACTED")
+def redact(text: str, secrets) -> str:
+    """Replace every known secret value in text. `secrets` is {value: shown_as} or a list of values
+    (shown with the default rules)."""
+    if not text or not secrets:
+        return text
+    mapping = secrets if isinstance(secrets, dict) else {v: display(v) for v in secrets if v}
+    for v in sorted(mapping, key=len, reverse=True):
+        if v and v in text:
+            text = text.replace(v, mapping[v])
     return text
 
 
@@ -306,39 +317,73 @@ _ENV_RE = re.compile(r"(\b" + _SECRET_NAME + r"=)([^\s\"']{4,})", re.I)
 _URL_CRED_RE = re.compile(r"(://[^/\s:@]+:)([^@\s/]+)(@)")
 
 
+def _name_of(assignment: str) -> str:
+    m = re.match(r"\W*(\w+)", assignment)
+    return m.group(1) if m else ""
+
+
 def mask_assignments(text: str) -> str:
-    """Heuristic: hide literal values assigned to secret-looking names, and passwords in URLs.
-    Code such as `password = request.form["password"]` is left readable."""
+    """Heuristic: show literal values assigned to secret-looking names (and passwords in URLs)
+    with the secret_display rules. Code such as `password = request.form["password"]` stays readable."""
     if not text:
         return text
-    text = _URL_CRED_RE.sub(r"\1REDACTED\3", text)
-    text = _QUOTED_RE.sub(lambda m: m.group(0)[: m.start(3) - m.start(0)] + "REDACTED" + m.group(2), text)
-    return _ENV_RE.sub(lambda m: m.group(1) + "REDACTED", text)
+
+    def url(m):
+        return m.group(0) if is_masked(m.group(2)) else m.group(1) + display_url_password(m.group(2)) + m.group(3)
+
+    def quoted(m):
+        value = m.group(3)
+        if is_masked(value):
+            return m.group(0)
+        return m.group(0)[: m.start(3) - m.start(0)] + display(value, name=_name_of(m.group(0))) + m.group(2)
+
+    def env(m):
+        value = m.group(2)
+        return m.group(0) if is_masked(value) else m.group(1) + display(value, name=m.group(1))
+
+    text = _URL_CRED_RE.sub(url, text)
+    text = _QUOTED_RE.sub(quoted, text)
+    return _ENV_RE.sub(env, text)
 
 
-_SECRET_RULE = re.compile(r"secret|credential|password|passwd|token|api[-_.]?key|private[-_.]?key|"
-                          r"access[-_.]?key|hardcoded|leak", re.I)
+# Rules that *detect a secret value* (mask every literal on the line). Rules that are merely *about*
+# passwords (e.g. "md5-used-as-password", "rds-insecure-password-storage") are not included: their
+# snippets are ordinary code and only get the assignment heuristic.
+_SECRET_RULE = re.compile(r"(^|[.:])secrets?[.:]|hard-?coded|detected-[\w-]*(key|token|secret|password|credential)|"
+                          r"leaked|(api|access|private|secret)[-_.]?key|[-_.]token$|credentials?[-_.]?(in|exposed)",
+                          re.I)
 _QUOTED_ANY = re.compile(r"""(["'`])([^"'`\n]{8,})\1""")
 _LONG_TOKEN = re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9+/_\-.]{20,}={0,2}(?![A-Za-z0-9])")
 
 
-def mask_secret_snippet(text: str) -> str:
-    """For findings that are about a secret: hide every quoted literal and every long token,
-    whatever the variable is called (the scanner said there is a secret on these lines)."""
+def mask_secret_snippet(text: str, rule_id: str = "") -> str:
+    """For findings that are about a secret: every quoted literal and every long token on these
+    lines is shown with the secret_display rules, whatever the variable is called."""
     if not text:
         return text
+    pw = is_password(rule_id)
+
+    def lit(m):
+        v = m.group(2)
+        return m.group(0) if is_masked(v) else m.group(1) + display(v, rule_id="password" if pw else rule_id) + m.group(1)
+
+    def tok(m):
+        v = m.group(0)
+        return v if is_masked(v) else display(v, rule_id="password" if pw else rule_id)
+
     out = []
     for line in text.splitlines():
         prefix, sep, code = line.partition(" | ")
         if not sep:
             prefix, code = "", line
-        code = _QUOTED_ANY.sub(lambda m: m.group(1) + "REDACTED" + m.group(1), code)
-        code = _LONG_TOKEN.sub("REDACTED", code)
+        # lit()/tok() leave already-masked values alone, so mixed lines are handled too
+        code = _QUOTED_ANY.sub(lit, code)
+        code = _LONG_TOKEN.sub(tok, code)
         out.append(prefix + sep + code)
     return "\n".join(out)
 
 
-def redact_findings(findings: list[dict], secrets: list[str]) -> None:
+def redact_findings(findings: list[dict], secrets) -> None:
     """Mask secret values wherever they appear in any finding: exact values found by
     Gitleaks, a heuristic for secret-looking assignments, and full masking of snippets of any
     finding whose rule is about secrets (so secrets stay hidden even without Gitleaks)."""
@@ -349,7 +394,7 @@ def redact_findings(findings: list[dict], secrets: list[str]) -> None:
         if f.get("snippet"):
             f["snippet"] = mask_assignments(f["snippet"])
             if f.get("check") == "secrets" or _SECRET_RULE.search(f.get("rule_id") or ""):
-                f["snippet"] = mask_secret_snippet(f["snippet"])
+                f["snippet"] = mask_secret_snippet(f["snippet"], f.get("rule_id") or "")
 
 
 def _rule_label(rule: str) -> str:
@@ -377,7 +422,7 @@ def parse_gitleaks(data: list, root: str | None = None) -> list[dict]:
             snippet=f"{g.get('StartLine', '?')} | {match}" if match else "",
             description=((desc + "\n\n") if desc else "")
             + f"A value matching the '{rule}' pattern is committed to the repository. {where} "
-              "The secret value is redacted in this report.",
+              "The value is shown partially (or not at all for passwords) with a fingerprint that is the same wherever this credential appears.",
             check="secrets",
             scanner="gitleaks",
             rule_id=rule,
