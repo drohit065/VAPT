@@ -84,6 +84,8 @@ services:
     command:
       - zap.sh
       - -daemon
+      # -silent: no add-on update checks or other unsolicited outbound calls (they can stall start-up)
+      - -silent
       - -host
       - 0.0.0.0
       - -port
