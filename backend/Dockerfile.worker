@@ -11,13 +11,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 
 # Retries for flaky mirrors; --progress-bar off avoids pip's progress thread crashing ("can't start
 # new thread") on heavily loaded hosts.
-RUN apt-get -o Acquire::Retries=5 update \
+# Skipped when the base image already has the OS packages (hosts with an old runc / libseccomp prepare
+# such a base once with seccomp relaxed; see deploy/docker-compose.old-runc.yml and the README).
+RUN if command -v git >/dev/null 2>&1 && command -v nmap >/dev/null 2>&1; then echo "OS packages present"; else \
+    apt-get -o Acquire::Retries=5 update \
  && apt-get -o Acquire::Retries=5 install -y --no-install-recommends git ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/*; fi
 
 # Semgrep lives in its own virtualenv so its pinned dependencies never clash with the app's.
 RUN python -m venv /opt/semgrep \
- && /opt/semgrep/bin/pip install --no-cache-dir --progress-bar off semgrep==1.181.1 \
+ && /opt/semgrep/bin/pip install --no-cache-dir --progress-bar off --retries 10 --timeout 120 semgrep==1.181.1 \
  && ln -s /opt/semgrep/bin/semgrep /usr/local/bin/semgrep
 
 COPY --from=trivy /usr/local/bin/trivy /usr/local/bin/trivy
@@ -25,13 +28,14 @@ COPY --from=gitleaks /usr/bin/gitleaks /usr/local/bin/gitleaks
 COPY --from=nuclei /usr/local/bin/nuclei /usr/local/bin/nuclei
 
 # nmap for TLS cipher enumeration and port scans (unprivileged TCP connect scans only).
-RUN apt-get -o Acquire::Retries=5 update \
+RUN if command -v nmap >/dev/null 2>&1; then echo "nmap present"; else \
+    apt-get -o Acquire::Retries=5 update \
  && apt-get -o Acquire::Retries=5 install -y --no-install-recommends nmap \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/*; fi
 
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir --progress-bar off -r requirements.txt
+RUN pip install --no-cache-dir --progress-bar off --retries 10 --timeout 120 -r requirements.txt
 COPY app ./app
 RUN chmod 755 app/worker/askpass.sh
 

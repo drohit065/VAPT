@@ -1,0 +1,20 @@
+# Compose override for hosts with an old container runtime (runc < 1.0.3 / libseccomp < 2.5,
+# e.g. Amazon Linux 2 with runc 1.0.0-rc92 + libseccomp 2.4.1).
+#
+# Their seccomp filter does not know the clone3 syscall and answers EPERM, so current glibc
+# (Debian 12/13) cannot start threads or spawn processes: "RuntimeError: can't start new thread".
+# Only VAPT's glibc-based containers get seccomp relaxed; to compensate they drop every Linux
+# capability and cannot gain privileges. They already run as non-root users.
+#
+# Enable it in .env:  COMPOSE_FILE=docker-compose.yml:deploy/docker-compose.old-runc.yml
+# Remove it once the host runs runc >= 1.0.3 and libseccomp >= 2.5.
+services:
+  backend:
+    security_opt: ["seccomp=unconfined", "no-new-privileges:true"]
+    cap_drop: [ALL]
+  worker:
+    security_opt: ["seccomp=unconfined", "no-new-privileges:true"]
+    cap_drop: [ALL]
+  zap:
+    security_opt: ["seccomp=unconfined", "no-new-privileges:true"]
+    cap_drop: [ALL]

@@ -210,6 +210,34 @@ sudo nginx -t && sudo systemctl reload nginx
 DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 docker compose up -d --build
 ```
 
+#### Hosts with an old container runtime (runc < 1.0.3, libseccomp < 2.5)
+
+Symptoms: builds fail with `flag provided but not defined: -keep`, `apt-get` fails with
+`Problem executing scripts APT::Update::Post-Invoke`, Python fails with `can't start new thread`.
+Check with `runc --version` and `rpm -q libseccomp`. Current glibc uses the `clone3` syscall,
+which those versions' seccomp filter rejects. Without touching the host's runtime:
+
+```bash
+# 1. Base image with the OS packages, prepared once with seccomp relaxed for this one container
+docker run --name vapt-osbase --security-opt seccomp=unconfined python:3.12-slim sh -c \
+  "apt-get update && apt-get install -y --no-install-recommends git ca-certificates nmap && rm -rf /var/lib/apt/lists/*"
+docker commit vapt-osbase vapt-pybase:latest && docker rm vapt-osbase
+
+# 2. .env
+PYTHON_IMAGE=vapt-pybase:latest
+COMPOSE_FILE=docker-compose.yml:deploy/docker-compose.old-runc.yml   # seccomp relaxed for backend, worker, zap only
+
+# 3. Build with the classic builder, then start
+for s in backend worker frontend; do
+  f=Dockerfile; ctx=./backend; [ $s = worker ] && f=Dockerfile.worker; [ $s = frontend ] && ctx=./frontend
+  DOCKER_BUILDKIT=0 docker build -t vapt-$s --build-arg PYTHON_IMAGE=vapt-pybase:latest -f $ctx/$f $ctx || break
+done && docker compose up -d --no-build
+```
+
+The override drops all Linux capabilities and sets `no-new-privileges` for those containers to make
+up for the relaxed filter. Remove it (and rebuild normally) once the host runs runc >= 1.0.3 and
+libseccomp >= 2.5.
+
 On a shared box, do **not** change the instance metadata hop limit without checking the other
 workloads; instead block instance metadata for the VAPT networks only (after the first start):
 
