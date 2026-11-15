@@ -191,3 +191,41 @@ def test_schedule_credentials_write_only(client):
                    json={"schedule": "daily", "hour_utc": 3, "clear_credentials": True})
     assert r.json()["schedule_has_credentials"] is False
     assert "ghp_secretvalue123" not in str(client.get("/api/audit", headers=admin).json())
+
+
+def test_dashboard_and_deletion(client):
+    from datetime import datetime, timedelta, timezone
+
+    from app.db import SessionLocal
+    from app.models import Finding, Project, Scan
+    admin = hdr(login(client, "admin", "builtin-admin-password-123").json()["access_token"])
+    db = SessionLocal()
+    p = Project(name="dash-proj", source_type="git", source="https://github.com/acme/dash")
+    db.add(p)
+    db.flush()
+    old = Scan(project_id=p.id, status="completed", counts={"Critical": 2, "High": 0, "Medium": 0, "Low": 0},
+               finished_at=datetime.now(timezone.utc) - timedelta(days=20), diff={})
+    new = Scan(project_id=p.id, status="completed", counts={"Critical": 1, "High": 3, "Medium": 0, "Low": 0},
+               finished_at=datetime.now(timezone.utc) - timedelta(days=1), diff={"new": 3, "fixed": 1})
+    db.add_all([old, new])
+    db.flush()
+    db.add(Finding(scan_id=new.id, severity="High", title="t", file_path="a", check="deps", snippet="", description="",
+                   exploitation="", recommendation="", scanners=["trivy"], status="open"))
+    db.commit()
+    pid, sid = p.id, new.id
+    db.close()
+
+    d = client.get("/api/dashboard", headers=admin).json()
+    assert d["totals"]["Critical"] >= 1 and d["totals"]["High"] >= 3
+    assert len(d["trend"]) == 12 and d["kpis"]["fixed_30d"] >= 1
+    assert any(t["name"] == "dash-proj" for t in d["top_projects"])
+    assert any(c["check"] == "deps" for c in d["categories"])
+
+    viewer = client.post("/api/users", headers=admin, json={"username": "dash.viewer", "password": "viewer-pass-123456"}).json()
+    v = hdr(login(client, "dash.viewer", "viewer-pass-123456").json()["access_token"])
+    assert client.get("/api/dashboard", headers=v).status_code == 200
+    assert client.delete(f"/api/projects/{pid}", headers=v).status_code == 403
+    assert client.delete(f"/api/scans/{sid}", headers=admin).status_code == 200
+    assert client.delete(f"/api/projects/{pid}", headers=admin).status_code == 200
+    assert client.get(f"/api/projects/{pid}", headers=admin).status_code == 404
+    client.delete(f"/api/users/{viewer['id']}", headers=admin)

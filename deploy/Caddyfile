@@ -1,0 +1,18 @@
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+	# Large zip uploads (keep in line with MAX_UPLOAD_MB and nginx client_max_body_size)
+	request_body {
+		max_size 110MB
+	}
+	reverse_proxy frontend:8080 {
+		header_up X-Forwarded-Proto https
+	}
+}

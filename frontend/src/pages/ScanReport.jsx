@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useOutletContext, useParams } from 'react-router-dom'
+import { Link, useNavigate, useOutletContext, useParams } from 'react-router-dom'
 import { api } from '../api.js'
 import { can } from '../components/Layout.jsx'
 import { CountChips, SEVERITIES, SevBadge, SeverityBar, fmtTime } from '../components/Severity.jsx'
@@ -326,6 +326,7 @@ function DiffCard({ diff }) {
 export default function ScanReport() {
   const { id } = useParams()
   const { user } = useOutletContext() || {}
+  const navigate = useNavigate()
   const [scan, setScan] = useState(null)
   const [findings, setFindings] = useState(null)
   const [error, setError] = useState('')
@@ -361,6 +362,19 @@ export default function ScanReport() {
     } finally {
       setBusy('')
     }
+  }
+
+  async function deleteScan(h) {
+    if (!window.confirm(`Delete scan #${h.id} and its findings? This cannot be undone.`)) return
+    try {
+      await api(`/api/scans/${h.id}`, { method: 'DELETE' })
+      if (h.id === scan.id) {
+        const rest = history.filter(x => x.id !== h.id && x.status === 'completed')
+        navigate(rest.length ? `/scans/${rest[0].id}/report` : '/projects')
+      } else {
+        setHistory(hs => hs.filter(x => x.id !== h.id))
+      }
+    } catch (e) { setDlError(e.message) }
   }
 
   async function bulkTickets() {
@@ -544,7 +558,7 @@ export default function ScanReport() {
           <h2 style={{ padding: '8px 8px 0' }}>Scan history</h2>
           <table className="list responsive">
             <thead>
-              <tr><th>Scan</th><th>Date</th><th>Branch</th><th>Status</th><th>Open findings</th></tr>
+              <tr><th>Scan</th><th>Date</th><th>Branch</th><th>Status</th><th>Open findings</th>{can(user, 'admin') && <th aria-label="Actions" />}</tr>
             </thead>
             <tbody>
               {history.map(h => {
@@ -563,6 +577,13 @@ export default function ScanReport() {
                     <td data-label="Open findings">
                       {h.status === 'completed' ? <CountChips counts={h.counts} /> : <span className="muted">—</span>}
                     </td>
+                    {can(user, 'admin') && (
+                      <td data-label="">
+                        {h.status !== 'running' && (
+                          <button type="button" className="linkbtn danger" onClick={() => deleteScan(h)}>Delete</button>
+                        )}
+                      </td>
+                    )}
                   </tr>
                 )
               })}

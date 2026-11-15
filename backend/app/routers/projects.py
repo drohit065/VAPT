@@ -99,3 +99,22 @@ def set_schedule(project_id: int, body: ScheduleIn, request: Request, db: Sessio
     audit(user.username, "schedule_changed", p.name, {"schedule": body.schedule, "hour_utc": body.hour_utc}
           | ({"credentials": creds_action} if creds_action else {}), client_ip(request))
     return project_summary(p)
+
+
+@router.delete("/{project_id}")
+def delete_project(project_id: int, request: Request, db: Session = Depends(get_db),
+                   user: CurrentUser = Depends(require_role("admin"))):
+    import os
+    p = db.get(Project, project_id)
+    if not p:
+        raise HTTPException(404, "Project not found")
+    if any(s.status == "running" for s in p.scans):
+        raise HTTPException(409, "A scan of this project is running; delete it when the scan has finished.")
+    for s in p.scans:
+        if s.upload_path and os.path.exists(s.upload_path):
+            os.remove(s.upload_path)
+    name, n = p.name, len(p.scans)
+    db.delete(p)
+    db.commit()
+    audit(user.username, "project_deleted", name, {"scans": n}, client_ip(request))
+    return {"deleted": project_id}

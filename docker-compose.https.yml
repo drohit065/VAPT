@@ -1,0 +1,31 @@
+# HTTPS with automatic Let's Encrypt certificates (Caddy).
+#   docker compose -f docker-compose.yml -f docker-compose.https.yml up -d --build
+# Needs: DOMAIN in .env (DNS A record -> this server), inbound TCP 80 + 443 reachable by Let's Encrypt
+# for the certificate challenge. If the security group must stay limited to office / VPN IPs, use an
+# AWS Application Load Balancer with an ACM certificate instead (see README) and keep the plain setup.
+services:
+  caddy:
+    image: caddy:2.8.4-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - frontend
+
+  frontend:
+    # Only Caddy is published; nginx trusts Caddy's X-Forwarded-For (Docker network range).
+    ports: !reset []
+    environment:
+      TRUSTED_PROXY_CIDR: 172.16.0.0/12
+
+volumes:
+  caddy-data:
+  caddy-config:

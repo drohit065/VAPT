@@ -518,3 +518,20 @@ def quality_gate(scan_id: int, fail_on: str = "High", new_only: bool = False, db
                                    blocking, key=lambda f: SEVERITY_ORDER[f.severity])[:20]],
         "report_url": url,
     }
+
+
+@router.delete("/scans/{scan_id}")
+def delete_scan(scan_id: int, request: Request, db: Session = Depends(get_db),
+                user: CurrentUser = Depends(require_role("admin"))):
+    scan = db.get(Scan, scan_id)
+    if not scan:
+        raise HTTPException(404, "Scan not found")
+    if scan.status == "running":
+        raise HTTPException(409, "The scan is running; delete it when it has finished.")
+    if scan.upload_path and os.path.exists(scan.upload_path):
+        os.remove(scan.upload_path)
+    project = scan.project
+    db.delete(scan)
+    db.commit()
+    audit(user.username, "scan_deleted", f"scan {scan_id}: {project.name}", ip=client_ip(request))
+    return {"deleted": scan_id, "project_id": project.id}

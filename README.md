@@ -81,17 +81,25 @@ browser ──► frontend (nginx, React)  :HTTP_PORT ─┐
 
 ## Deploy on a fresh Ubuntu EC2 instance
 
-Tested target: Ubuntu 22.04 / 24.04, `t3.medium` or larger (2 vCPU, 4 GB RAM), 30 GB disk.
-Both x86_64 and ARM (Graviton) instances work.
+Tested target: Ubuntu 22.04 / 24.04. Use **`t3.large` (2 vCPU, 8 GB RAM) or larger** with a
+**40 GB** disk: OWASP ZAP alone needs 1–1.5 GB RAM and the scanner databases / images take space.
+(`t3.medium` is enough if you only scan code, not live URLs.) x86_64 and ARM (Graviton) both work.
+
+**Instance metadata:** EC2 console → instance → *Actions → Instance settings → Modify instance
+metadata options* → IMDSv2 **Required**, hop limit **1**. Containers then cannot read the
+instance's IAM credentials even if a scanner were tricked into requesting them.
 
 ### 1. Security group
 
-Open **one inbound port: TCP 80** (or whatever you set `HTTP_PORT` to), plus TCP 22 for SSH.
+| Setup | Inbound rules |
+|---|---|
+| **A. HTTPS with Caddy** (recommended, built in) | TCP 443 and TCP 80 (Let's Encrypt needs 80/443 reachable for the certificate) + TCP 22 from your IP |
+| **B. HTTPS on an AWS load balancer** | ALB with an ACM certificate (443) → instance TCP 80 from the ALB's security group only; TCP 22 from your IP |
+| **C. Plain HTTP** (testing only) | TCP 80 (or `HTTP_PORT`) + TCP 22, both from trusted IPs only |
 
-> **Restrict both rules to trusted IPs only** (your office or VPN range, e.g. `203.0.113.10/32`),
-> never `0.0.0.0/0`. The dashboard holds vulnerability reports for your code. It serves plain
-> HTTP; if it must be reached over the internet, put it behind an HTTPS load balancer or
-> reverse proxy.
+> Restrict SSH (and in setup C, the web port) to trusted IPs such as your office / VPN range
+> (e.g. `203.0.113.10/32`), never `0.0.0.0/0`. The dashboard holds vulnerability reports. With
+> setup B you can also restrict the ALB to trusted IPs; with setup A, Let's Encrypt must reach port 80/443.
 
 Outbound HTTPS (443) must be allowed: the worker downloads Semgrep rules (`semgrep.dev`),
 the Trivy vulnerability database (`mirror.gcr.io` / `ghcr.io`), Nuclei templates (`github.com`), clones Git repositories and reaches the live targets you scan (HTTP/HTTPS).
@@ -140,27 +148,55 @@ Then edit the file:
 nano .env
 ```
 
-Set at least `ADMIN_USERNAME`, `ADMIN_PASSWORD` (12+ characters), `JWT_SECRET`,
-`TOKEN_ENCRYPTION_KEY` and `POSTGRES_PASSWORD`. To enable the AI review, also set
-`ANTHROPIC_API_KEY` (and optionally `ANTHROPIC_MODEL`). The backend refuses to start while
-placeholder values are still in place.
+Set at least `ADMIN_USERNAME`, a **strong** `ADMIN_PASSWORD` (16+ random characters, e.g.
+`openssl rand -base64 18`), `JWT_SECRET`, `TOKEN_ENCRYPTION_KEY`, `POSTGRES_PASSWORD` and
+`ZAP_API_KEY`. Also set:
+
+| Variable | When |
+|---|---|
+| `APP_URL` | always: the public dashboard address, used for links in notifications and tickets (e.g. `https://vapt.example.com`) |
+| `DOMAIN`, `ACME_EMAIL` | setup A (Caddy) |
+| `TRUSTED_PROXY_CIDR` | setup B: the VPC CIDR of the ALB (e.g. `10.0.0.0/16`) so login rate limiting and the audit log see real client IPs |
+| `HTTP_PORT` | setups B / C if not 80 |
+| `ANTHROPIC_API_KEY` | only for the (optional) AI review |
+
+The backend refuses to start while placeholder values are still in place. Keep `TOKEN_ENCRYPTION_KEY`
+safe and unchanged: it decrypts stored webhook URLs, ticketing tokens and saved schedule credentials.
 
 ### 5. Start
 
 ```bash
+# Setup A: HTTPS with automatic Let's Encrypt certificates
+docker compose -f docker-compose.yml -f docker-compose.https.yml up -d --build
+
+# Setups B and C: plain HTTP on HTTP_PORT (behind the ALB for B)
 docker compose up -d --build
 ```
 
-The first build takes a few minutes (it installs the scanners). Then open
-`http://<EC2-public-IP>/` and sign in with the admin credentials from `.env`.
+The first build takes several minutes (it installs the scanners). Then open `https://<DOMAIN>/`
+(or `http://<EC2-IP>/` for C) and sign in with the admin credentials from `.env`. Create named
+users with their own roles under **Users** instead of sharing the built-in admin.
 
-Useful commands:
+Useful commands (add `-f docker-compose.yml -f docker-compose.https.yml` for setup A):
 
 ```bash
 docker compose ps
 docker compose logs -f worker
-docker compose pull && docker compose up -d --build   # after git pull
+git pull && docker compose up -d --build      # update
 ```
+
+### 6. Backups
+
+The `backup` service writes `backups/vapt-YYYY-MM-DD.sql.gz` every night at 02:30 UTC and keeps
+`BACKUP_KEEP_DAYS` (default 14) days. Copy the folder off the instance (e.g. `aws s3 sync backups/
+s3://your-bucket/vapt/`) or use EBS snapshots. Restore:
+
+```bash
+gunzip -c backups/vapt-2026-11-14.sql.gz | docker compose exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+```
+
+Back up `.env` separately (a password manager or AWS Secrets Manager): without the same
+`TOKEN_ENCRYPTION_KEY` the encrypted settings in a restored database cannot be read.
 
 ## Test with the sample project
 

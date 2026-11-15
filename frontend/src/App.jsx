@@ -9,6 +9,7 @@ import ScanReport from './pages/ScanReport.jsx'
 import Users from './pages/Users.jsx'
 import Audit from './pages/Audit.jsx'
 import Settings from './pages/Settings.jsx'
+import Dashboard from './pages/Dashboard.jsx'
 
 function Protected({ children }) {
   return getToken() ? children : <Navigate to="/login" replace />
@@ -19,7 +20,7 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route element={<Protected><Layout /></Protected>}>
-        <Route path="/" element={<Navigate to="/projects" replace />} />
+        <Route path="/" element={<Dashboard />} />
         <Route path="/projects" element={<Projects />} />
         <Route path="/scans/new" element={<NewScan />} />
         <Route path="/scans/:id" element={<ScanProgress />} />
@@ -28,7 +29,7 @@ export default function App() {
         <Route path="/audit" element={<Audit />} />
         <Route path="/settings" element={<Settings />} />
       </Route>
-      <Route path="*" element={<Navigate to="/projects" replace />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )
 }

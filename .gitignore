@@ -17,3 +17,6 @@ frontend/dist/
 # Local data
 data/
 *.log
+
+# Database backups
+backups/

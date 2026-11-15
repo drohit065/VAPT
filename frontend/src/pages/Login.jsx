@@ -16,7 +16,7 @@ export default function Login() {
     try {
       const data = await api('/api/auth/login', { method: 'POST', body: { username, password } })
       setToken(data.access_token)
-      navigate('/projects', { replace: true })
+      navigate('/', { replace: true })
     } catch (err) {
       setError(err.message)
     } finally {
