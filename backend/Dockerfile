@@ -1,10 +1,12 @@
-FROM python:3.12-slim
+# PYTHON_IMAGE lets hosts where the default base image crashes use another Debian base (see README).
+ARG PYTHON_IMAGE=python:3.12-slim
+FROM ${PYTHON_IMAGE}
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --progress-bar off -r requirements.txt
 
 COPY app ./app
 

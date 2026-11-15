@@ -1,19 +1,23 @@
+# PYTHON_IMAGE: see backend/Dockerfile and the README pre-flight check.
+ARG PYTHON_IMAGE=python:3.12-slim
 # Scanner binaries are copied from their official, version-pinned images (multi-arch: amd64 + arm64).
 FROM aquasec/trivy:0.58.1 AS trivy
 FROM zricethezav/gitleaks:v8.21.2 AS gitleaks
 FROM projectdiscovery/nuclei:v3.11.1 AS nuclei
 
-FROM python:3.12-slim
+FROM ${PYTHON_IMAGE}
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 
-RUN apt-get update \
- && apt-get install -y --no-install-recommends git ca-certificates \
+# Retries for flaky mirrors; --progress-bar off avoids pip's progress thread crashing ("can't start
+# new thread") on heavily loaded hosts.
+RUN apt-get -o Acquire::Retries=5 update \
+ && apt-get -o Acquire::Retries=5 install -y --no-install-recommends git ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 # Semgrep lives in its own virtualenv so its pinned dependencies never clash with the app's.
 RUN python -m venv /opt/semgrep \
- && /opt/semgrep/bin/pip install --no-cache-dir semgrep==1.181.1 \
+ && /opt/semgrep/bin/pip install --no-cache-dir --progress-bar off semgrep==1.181.1 \
  && ln -s /opt/semgrep/bin/semgrep /usr/local/bin/semgrep
 
 COPY --from=trivy /usr/local/bin/trivy /usr/local/bin/trivy
@@ -21,13 +25,13 @@ COPY --from=gitleaks /usr/bin/gitleaks /usr/local/bin/gitleaks
 COPY --from=nuclei /usr/local/bin/nuclei /usr/local/bin/nuclei
 
 # nmap for TLS cipher enumeration and port scans (unprivileged TCP connect scans only).
-RUN apt-get update \
- && apt-get install -y --no-install-recommends nmap \
+RUN apt-get -o Acquire::Retries=5 update \
+ && apt-get -o Acquire::Retries=5 install -y --no-install-recommends nmap \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --progress-bar off -r requirements.txt
 COPY app ./app
 RUN chmod 755 app/worker/askpass.sh
 

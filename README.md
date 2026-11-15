@@ -185,6 +185,42 @@ docker compose logs -f worker
 git pull && docker compose up -d --build      # update
 ```
 
+### Shared host with an existing nginx (setup D)
+
+When the server already runs nginx on 80/443 with your certificate (e.g. a `*.prismxai.com` wildcard),
+don't use Caddy; publish the UI on localhost only and add a server block:
+
+```bash
+# .env
+HTTP_BIND=127.0.0.1
+HTTP_PORT=18096                      # any free port: check with  sudo ss -ltnp | grep 18096
+TRUSTED_PROXY_CIDR=172.16.0.0/12     # nginx reaches the container through the Docker bridge
+APP_URL=https://vapt-tool.example.com
+
+# Pre-flight on older hosts / hypervisors: the base image must not crash (exit code 139 = segfault)
+docker run --rm python:3.12-slim python -c "import ssl, hashlib, json; print('base image OK')"
+# If it segfaults (exit 139), test the other base:  docker run --rm python:3.12-slim-bookworm python -c "print(1)"
+# and set PYTHON_IMAGE=python:3.12-slim-bookworm in .env if that one works.
+# Debian 11 "bullseye" images are past end of life: their package mirrors are being retired.
+
+sudo cp deploy/nginx-vapt-tool.conf /etc/nginx/conf.d/vapt-tool.conf   # edit server_name + cert paths
+sudo nginx -t && sudo systemctl reload nginx
+
+# old runc (error "flag provided but not defined: -keep"): use the classic builder
+DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 docker compose up -d --build
+```
+
+On a shared box, do **not** change the instance metadata hop limit without checking the other
+workloads; instead block instance metadata for the VAPT networks only (after the first start):
+
+```bash
+for n in vapt_default vapt_scan; do
+  s=$(docker network inspect "$n" --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}')
+  sudo iptables -I DOCKER-USER -s "$s" -d 169.254.169.254 -j DROP
+done
+```
+(Not persistent across reboots / Docker restarts unless you save the rules, e.g. with `iptables-services`.)
+
 ### 6. Backups
 
 The `backup` service writes `backups/vapt-YYYY-MM-DD.sql.gz` every night at 02:30 UTC and keeps
