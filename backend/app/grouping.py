@@ -80,11 +80,13 @@ KINDS = {
     "gcp_api_key": (1, "Google API key"),
     "azure_secret": (1, "Azure AD client secret"),
     "openai": (1, "OpenAI API key"),
+    "anthropic": (1, "Anthropic API key"),
     "slack": (1, "Slack token"),
     "github": (1, "GitHub token"),
     "stripe": (1, "Stripe key"),
     "jwt": (2, "JSON Web Token"),
     "password_hash": (3, "Password hash"),
+    "password": (3.5, "Password"),
     "generic": (4, "Hardcoded secret"),
 }
 _RULE_KIND = [
@@ -92,7 +94,7 @@ _RULE_KIND = [
     ("private-key", "private_key"), ("gcp-api-key", "gcp_api_key"), ("google-api-key", "gcp_api_key"),
     ("azure-ad-client-secret", "azure_secret"), ("openai", "openai"), ("slack", "slack"),
     ("github", "github"), ("stripe", "stripe"), ("jwt", "jwt"), ("bcrypt", "password_hash"),
-    ("argon2", "password_hash"),
+    ("argon2", "password_hash"), ("anthropic", "anthropic"), ("vapt-config-password", "password"),
 ]
 
 
@@ -199,7 +201,7 @@ def group_secrets(findings: list[dict], root: str | None) -> list[dict]:
         else:
             label = KINDS[kind][1]
             title = (label if label.startswith("Hardcoded") else "Hardcoded " + label[0].lower() + label[1:]
-                     if kind in ("password_hash",) else "Hardcoded " + label) + f" ({fp})"
+                     if kind in ("password_hash", "password") else "Hardcoded " + label) + f" ({fp})"
             if kind == "aws_secret":
                 severity = "Critical"
             elif kind == "aws_key_id":
@@ -425,6 +427,12 @@ def group_deps(findings: list[dict]) -> list[dict]:
         if flagged:
             desc_lines.append(f"\n{flagged} of {n} need manual verification (see 'Verify' above). They are kept "
                               "in the report and the totals until confirmed not to apply.")
+        if rep.get("_rel") == "direct":
+            desc_lines.append(f"\n{pkg} is declared directly in {path}.")
+        elif rep.get("_rel") == "indirect":
+            via = ", ".join(rep.get("_via") or []) or "another dependency"
+            desc_lines.append(f"\n{pkg} is a transitive dependency: it is not declared in {path} but pulled in "
+                              f"by {via}.")
         moved = RELOCATED.get(pkg)
         if moved:
             new_pkg, min_v, why = moved
@@ -445,6 +453,14 @@ def group_deps(findings: list[dict]) -> list[dict]:
         if unfixed:
             rec += (f" No fix is published for {', '.join(unfixed)}: check whether the vulnerable function "
                     "is used, apply vendor mitigations, or replace the package.")
+        if rep.get("_rel") == "indirect":
+            via = ", ".join(rep.get("_via") or []) or "the dependency that pulls it in"
+            rec += (f" It is a transitive dependency (via {via}): first check whether a newer {via} already "
+                    f"uses a fixed {pkg}; otherwise pin {pkg}"
+                    + (f" {fix}" if fix else "") + " in "
+                    + ("<dependencyManagement> in pom.xml" if ecosystem(path) == "maven" else
+                       "a dependency constraint / override" if ecosystem(path) != "npm" else "`overrides` in package.json")
+                    + ".")
         if moved:
             rec += (f" Change the groupId and artifactId (and version) in {path} or the BOM that manages it, "
                     "rebuild and re-run your tests.")
@@ -473,6 +489,7 @@ def group_deps(findings: list[dict]) -> list[dict]:
 _CONCEPTS = [
     ("container-root-user", re.compile(r"^AVD-DS-0002$|missing-user(-entrypoint)?$", re.I),
      "Container runs as root (no non-root USER instruction)"),
+    ("csrf-disabled", re.compile(r"^(spring-)?csrf-disabled$", re.I), "CSRF protection disabled in Spring Security"),
 ]
 
 

@@ -37,7 +37,7 @@ from ..summary import scan_brief
 router = APIRouter(prefix="/api", tags=["scans"], dependencies=[Depends(require_user)])
 
 CHECKS = {
-    "code": "Code flaws (Semgrep)",
+    "code": "Code and Spring config flaws (Semgrep + built-in)",
     "deps": "Vulnerable dependencies (Trivy)",
     "secrets": "Hardcoded secrets (Gitleaks, incl. Git history)",
     "iac": "Docker and Terraform files (Trivy config)",

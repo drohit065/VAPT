@@ -10,6 +10,7 @@ Security rules enforced here:
 import json
 import logging
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -39,6 +40,7 @@ from ..normalize import (
 from sqlalchemy import select
 
 from ..findings_mgmt import apply_history, open_counts
+from ..config_checks import scan_config_secrets, scan_spring
 from ..grouping import annotate_line_secret, group_findings, is_secret_finding
 from ..notifier import notify_scan
 from ..severity_policy import apply_policy
@@ -55,9 +57,9 @@ WORK_ROOT = os.environ.get("VAPT_WORK_DIR", "/work")
 CACHE_DIR = os.environ.get("VAPT_CACHE_DIR", "/cache")
 
 CHECK_STEPS = [
-    ("code", "Code flaws (Semgrep)"),
+    ("code", "Code and Spring config flaws (Semgrep + built-in)"),
     ("deps", "Vulnerable dependencies (Trivy)"),
-    ("secrets", "Hardcoded secrets (Gitleaks)"),
+    ("secrets", "Hardcoded secrets (Gitleaks + config files)"),
     ("iac", "Docker and Terraform files (Trivy config)"),
     ("web", "Web security checks (headers, TLS, cookies, CORS, exposed files)"),
     ("nuclei", "Known vulnerabilities and misconfigurations (Nuclei)"),
@@ -128,6 +130,9 @@ def tool_env(home: str) -> dict:
     return env
 
 
+POM_RETRY_WAIT = 45  # seconds to wait before retrying a rate-limited Maven Central resolution
+
+
 def run_tool(cmd: list[str], cwd: str, home: str, timeout: float,
              extra_env: dict | None = None) -> subprocess.CompletedProcess:
     """extra_env carries per-call secrets (e.g. registry login) via the environment, never argv."""
@@ -188,14 +193,48 @@ def check_code(src, out_dir, home, budget):
     findings = parse_semgrep(data, src)
     errs = len(data.get("errors") or [])
     detail = f"{len(findings)} issue(s)" + (f", {errs} file(s) could not be parsed" if errs else "")
+    spring, cov = scan_spring(src)
+    findings += spring
+    if cov["config_files"] or cov["java_files"]:
+        detail += (f"; Spring checks: {len(spring)} issue(s) in {cov['config_files']} config and "
+                   f"{cov['java_files']} Java file(s)")
+    else:
+        detail += "; no Spring config or Java files found"
     return findings, detail
 
 
-def check_deps(src, out_dir, home, budget):
+_POM_FETCH_FAIL = re.compile(r"\[pom\] Failed to fetch.*?statusCode=(\d+)")
+_POM_NO_VERSION = re.compile(r'\[pom\] Dependency version cannot be determined\.\s+GroupID="([^"]+)"\s+ArtifactID="([^"]+)"')
+_POM_NOT_FOUND = re.compile(r'\[pom\] Repository error\s+err="([^"\s]+) was not found in local/remote')
+
+
+def pom_resolution_problems(log: str) -> dict:
+    """What Trivy could not resolve for Maven projects, from its debug log. Versions inherited from a
+    parent POM / BOM, and all transitive dependencies, need POM files from Maven Central; when those
+    downloads fail Trivy silently reports fewer packages."""
+    codes = _POM_FETCH_FAIL.findall(log or "")
+    unresolved = sorted({f"{g}:{a}" for g, a in _POM_NO_VERSION.findall(log or "")})
+    missing = sorted(set(_POM_NOT_FOUND.findall(log or "")))
+    return {"failed_fetches": len(codes), "throttled": sum(1 for c in codes if c == "429"),
+            "unresolved": unresolved, "missing_poms": missing}
+
+
+def check_deps(src, out_dir, home, budget, notes: list | None = None):
     out = os.path.join(out_dir, "trivy-fs.json")
-    cmd = ["trivy", "fs", "--scanners", "vuln", "--format", "json", "--output", out, "--quiet",
+    # --list-all-pkgs: package relationships (direct / indirect and who pulls each one in).
+    # --debug (not --quiet): the log is the only place Trivy says that a POM download failed.
+    cmd = ["trivy", "fs", "--scanners", "vuln", "--list-all-pkgs", "--format", "json", "--output", out, "--debug",
            "--timeout", f"{int(budget)}s", src]
+    started = time.monotonic()
     proc = run_tool(cmd, out_dir, home, budget)
+    problems = pom_resolution_problems(proc.stderr)
+    # Maven Central rate limiting (HTTP 429) is usually short-lived: wait and try once more.
+    remaining = budget - (time.monotonic() - started)
+    if problems["throttled"] and remaining > 4 * POM_RETRY_WAIT:
+        time.sleep(POM_RETRY_WAIT)
+        cmd[cmd.index("--timeout") + 1] = f"{int(remaining - POM_RETRY_WAIT)}s"
+        proc = run_tool(cmd, out_dir, home, remaining - POM_RETRY_WAIT)
+        problems = pom_resolution_problems(proc.stderr)
     data = _load_json(out)
     if data is None or proc.returncode != 0:
         raise RuntimeError(f"Trivy failed: {_tail(proc.stderr)}")
@@ -204,7 +243,39 @@ def check_deps(src, out_dir, home, budget):
     detail = f"{len(findings)} vulnerable package(s) in {len(targets)} manifest(s)"
     if not targets:
         detail = "No supported lockfiles or manifests found"
+    if problems["unresolved"] or problems["missing_poms"]:
+        why = ("Maven Central refused the downloads (HTTP 429, rate limited)" if problems["throttled"]
+               else "the POM files could not be downloaded from Maven Central")
+        names = problems["unresolved"] or problems["missing_poms"]
+        detail += f"; INCOMPLETE: {len(names)} Maven dependenc{'y' if len(names) == 1 else 'ies'} not checked"
+        if notes is not None:
+            notes.append(
+                f"Dependency check is incomplete: {why}. Versions inherited from the parent POM / BOM and the "
+                f"transitive dependencies of the affected packages could not be determined, so they were not "
+                f"checked for vulnerabilities: {', '.join(names[:10])}"
+                + (f" and {len(names) - 10} more" if len(names) > 10 else "")
+                + ". Re-scan later; vulnerabilities in these packages are missing from this report.")
     return findings, detail
+
+
+# Built-in Gitleaks rules plus current OpenAI / Anthropic key formats. Never a config from the scanned code.
+GITLEAKS_CONFIG = r"""[extend]
+useDefault = true
+
+[[rules]]
+id = "openai-api-key-v2"
+description = "OpenAI API key (project, service account or admin key)"
+regex = '\b(sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,})(?:[^A-Za-z0-9_-]|$)'
+secretGroup = 1
+keywords = ["sk-proj-", "sk-svcacct-", "sk-admin-"]
+
+[[rules]]
+id = "anthropic-api-key-v2"
+description = "Anthropic API key"
+regex = '\b(sk-ant-(?:api|admin)\d{2}-[A-Za-z0-9_-]{80,})(?:[^A-Za-z0-9_-]|$)'
+secretGroup = 1
+keywords = ["sk-ant-"]
+"""
 
 
 def check_secrets(src, out_dir, home, budget, has_git: bool):
@@ -215,7 +286,7 @@ def check_secrets(src, out_dir, home, budget, has_git: bool):
     # Always the built-in rules, never a config from the scanned repository.
     cfg = os.path.join(out_dir, "gitleaks-config.toml")
     with open(cfg, "w") as fh:
-        fh.write("[extend]\nuseDefault = true\n")
+        fh.write(GITLEAKS_CONFIG)
     ignore = os.path.join(out_dir, "gitleaks-empty-ignore")
     open(ignore, "w").close()
     cmd = ["gitleaks", mode, "--config", cfg, "--gitleaks-ignore-path", ignore, "--report-format", "json",
@@ -230,8 +301,16 @@ def check_secrets(src, out_dir, home, budget, has_git: bool):
     findings = parse_gitleaks(data, src)
     secrets = secret_values(data)
     os.remove(out)
-    scope = "files and full Git history" if has_git else "files (zip uploads have no Git history)"
-    return findings, f"{len(data)} raw match(es) in {scope}", secrets
+    # Low-entropy passwords in Spring config that entropy-based rules skip.
+    cfg_findings, cfg_secrets = scan_config_secrets(src)
+    findings += cfg_findings
+    for value, shown in cfg_secrets.items():
+        secrets.setdefault(value, shown)
+    scope = "files and full Git history" if has_git else "files only (zip upload: no Git history)"
+    detail = f"{len(data)} raw match(es) in {scope}"
+    if cfg_findings:
+        detail += f", {len(cfg_findings)} hardcoded password(s) in Spring config"
+    return findings, detail, secrets
 
 
 def check_image(info, creds, out_dir, home, budget):
@@ -469,6 +548,9 @@ def run_scan(scan_id: int) -> None:
             os.remove(scan.upload_path)
             scan_root = single_top_dir(src_dir)
             has_git = False
+            notes.append("Git history was not scanned: a zip upload contains only the current files. A secret "
+                         "that was deleted from the code but is still in the repository history is not found; "
+                         "scan the Git repository URL to include history.")
             detail = f"Extracted {info['files']} file(s)"
             if info["skipped_symlinks"]:
                 detail += f", skipped {info['skipped_symlinks']} symlink(s)"
@@ -514,7 +596,7 @@ def run_scan(scan_id: int) -> None:
             return found, detail
         runners = {
             "code": lambda: check_code(scan_root, out_dir, home, budget()),
-            "deps": lambda: check_deps(scan_root, out_dir, home, budget()),
+            "deps": lambda: check_deps(scan_root, out_dir, home, budget(), notes),
             "secrets": lambda: check_secrets(scan_root, out_dir, home, budget(), has_git),
             "iac": lambda: check_iac(scan_root, out_dir, home, budget()),
             "web": lambda: (lambda f: (f, f"{len(f)} issue(s) on {len(targets)} target(s)"))(

@@ -39,8 +39,8 @@ SEV_BG = {
 SEV_FG = {"Critical": colors.white, "High": colors.white,
           "Medium": colors.HexColor("#3d2c00"), "Low": colors.HexColor("#22324a"),
           "Info": colors.HexColor("#3A4556")}
-CHECK_LABELS = {"code": "Code flaws (Semgrep)", "deps": "Vulnerable dependencies (Trivy)",
-                "secrets": "Hardcoded secrets (Gitleaks)", "iac": "Docker and Terraform (Trivy config)",
+CHECK_LABELS = {"code": "Code and Spring config flaws (Semgrep + built-in)", "deps": "Vulnerable dependencies (Trivy)",
+                "secrets": "Hardcoded secrets (Gitleaks + config files)", "iac": "Docker and Terraform (Trivy config)",
                 "web": "Web security checks", "nuclei": "Known vulnerabilities (Nuclei)",
                 "authz": "Access control comparison", "zap": "OWASP ZAP (crawl, passive)",
                 "zap_active": "OWASP ZAP active scan", "tls": "TLS protocols and ciphers",

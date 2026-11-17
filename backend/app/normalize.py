@@ -217,10 +217,43 @@ def parse_semgrep(data: dict, root: str | None = None) -> list[dict]:
 TRIVY_SEV = {"CRITICAL": "Critical", "HIGH": "High", "MEDIUM": "Medium", "LOW": "Low", "UNKNOWN": "Low"}
 
 
+def trivy_relationships(res: dict):
+    """From `--list-all-pkgs` output: PkgID -> (relationship, [direct dependencies that pull it in])."""
+    pkgs = [p for p in res.get("Packages") or [] if p.get("ID")]
+    by_id = {p["ID"]: p for p in pkgs}
+    parents: dict[str, list[str]] = {}
+    for p in pkgs:
+        for child in p.get("DependsOn") or []:
+            parents.setdefault(child, []).append(p["ID"])
+
+    def via(pid: str) -> list[str]:
+        seen, out, todo = set(), set(), list(parents.get(pid, []))
+        while todo and len(seen) < 2000:
+            q = todo.pop()
+            if q in seen:
+                continue
+            seen.add(q)
+            rel = (by_id.get(q) or {}).get("Relationship")
+            if rel == "direct":
+                out.add(by_id[q].get("Name") or q)
+            elif rel != "root":
+                todo.extend(parents.get(q, []))
+        return sorted(out)
+
+    def lookup_rel(pid: str):
+        p = by_id.get(pid or "")
+        rel = (p or {}).get("Relationship")
+        if rel not in ("direct", "indirect"):
+            return None, []
+        return rel, (via(pid) if rel == "indirect" else [])
+    return lookup_rel
+
+
 def parse_trivy_vulns(data: dict) -> list[dict]:
     out = []
     for res in (data or {}).get("Results", []) or []:
         target = rel_path(res.get("Target", ""), None)
+        relationship = trivy_relationships(res)
         for v in res.get("Vulnerabilities", []) or []:
             vid = v.get("VulnerabilityID", "")
             pkg = v.get("PkgName", "")
@@ -265,7 +298,8 @@ def parse_trivy_vulns(data: dict) -> list[dict]:
                 cvss_vector=src.get("V3Vector"),
             ) | {"_pkg": pkg, "_installed": installed, "_fixed": fixed, "_vtitle": (v.get("Title") or "")[:300],
                  "_url": v.get("PrimaryURL") or "", "_cvss_src": (src_name or "").upper().replace("REDHAT", "Red Hat"),
-                 "_vdesc": (v.get("Description") or "")[:3000]})
+                 "_vdesc": (v.get("Description") or "")[:3000]}
+              | dict(zip(("_rel", "_via"), relationship(v.get("PkgID")))))
     return out
 
 
