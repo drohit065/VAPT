@@ -55,7 +55,7 @@ def fingerprint(f: dict) -> str:
 
 def open_counts(findings) -> dict:
     """Severity counts of findings that still need attention (attribute or dict access)."""
-    counts = {s: 0 for s in SEVERITY_ORDER}
+    counts = {s: 0 for s in SEVERITY_ORDER if s != "Info"}  # Info only when present
     for f in findings:
         status = f["status"] if isinstance(f, dict) else f.status
         sev = f["severity"] if isinstance(f, dict) else f.severity

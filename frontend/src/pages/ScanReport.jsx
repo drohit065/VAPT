@@ -535,8 +535,9 @@ export default function ScanReport() {
         </div>
         <div className="report-filters">
           <div className="segmented">
-            {['all', ...SEVERITIES].map(s => (
-              <button key={s} type="button" className={sev === s ? 'on' : ''} onClick={() => setSev(s)}>
+            {['all', ...SEVERITIES, ...(viewCounts.Info ? ['Info'] : [])].map(s => (
+              <button key={s} type="button" className={sev === s ? 'on' : ''} onClick={() => setSev(s)}
+                      title={s === 'Info' ? 'Informational: shown for completeness, not counted in totals' : undefined}>
                 {s === 'all' ? 'All severities' : `${s} (${viewCounts[s] || 0})`}
               </button>
             ))}

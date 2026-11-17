@@ -9,7 +9,7 @@ from .findings_mgmt import STATUSES
 CSV_FIELDS = ["severity", "cvss_score", "cvss_source", "status", "is_new", "title", "file_path", "line",
               "locations", "check", "scanners", "rule_id", "cwe", "owasp", "description", "exploitation",
               "recommendation", "status_note", "fingerprint"]
-SARIF_LEVEL = {"Critical": "error", "High": "error", "Medium": "warning", "Low": "note"}
+SARIF_LEVEL = {"Critical": "error", "High": "error", "Medium": "warning", "Low": "note", "Info": "note"}
 
 
 def format_locations(locations) -> str:

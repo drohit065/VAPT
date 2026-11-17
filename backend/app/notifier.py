@@ -95,7 +95,7 @@ def build_message(scan, project, new_counts: dict, app_url: str) -> tuple[str, s
         text = f"Scan #{scan.id} of {project.name} failed: {scan.error or 'unknown error'}\n{link}"
         return subject, text, True
     totals = ", ".join(f"{counts.get(s, 0)} {s}" for s in SEVERITIES)
-    new_txt = ", ".join(f"{n} {s}" for s, n in new_counts.items() if n) or "none"
+    new_txt = ", ".join(f"{n} {s}" for s, n in new_counts.items() if n and s in SEVERITIES) or "none"
     subject = f"[VAPT] {project.name}: {sum(counts.get(s, 0) for s in SEVERITIES)} open finding(s)"
     if new_counts.get("Critical") or new_counts.get("High"):
         subject = f"[VAPT] New {'Critical' if new_counts.get('Critical') else 'High'} findings in {project.name}"
@@ -113,7 +113,7 @@ def should_notify(cfg: dict, scan, new_counts: dict) -> bool:
         return True
     if cfg.get("on_new_findings"):
         limit = SEV_RANK.get(cfg.get("min_severity") or "High", 1)
-        return any(n and SEV_RANK[s] <= limit for s, n in new_counts.items())
+        return any(n and SEV_RANK.get(s, 99) <= limit for s, n in new_counts.items())
     return False
 
 

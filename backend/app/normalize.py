@@ -25,7 +25,8 @@ import re
 from .knowledge import cwe_number, lookup
 from .secret_display import display, display_url_password, is_masked, is_password
 
-SEVERITY_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
+# Info: reported for completeness but never counted in totals (summary.SEVERITIES has no Info).
+SEVERITY_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
 MAX_TEXT = 4000
 MAX_SNIPPET_LINES = 15
 MAX_SNIPPET_FILE_BYTES = 5 * 1024 * 1024
@@ -97,7 +98,22 @@ def _owasp_2021(value) -> str | None:
     return None
 
 
-ESTIMATED_CVSS = {"Critical": 9.1, "High": 7.5, "Medium": 5.3, "Low": 3.1}
+ESTIMATED_CVSS = {"Critical": 9.1, "High": 7.5, "Medium": 5.3, "Low": 3.1, "Info": 0.0}
+GENERIC_RISK = "Generic risk for this class of issue: "
+
+
+def severity_from_cvss(score) -> str | None:
+    """CVSS v3 qualitative rating. One rule for every finding that carries a score, so the
+    severity shown always agrees with the CVSS shown next to it."""
+    if score is None:
+        return None
+    if score >= 9.0:
+        return "Critical"
+    if score >= 7.0:
+        return "High"
+    if score >= 4.0:
+        return "Medium"
+    return "Low" if score > 0 else "Info"
 
 
 def _cvss_fields(severity, score, vector) -> dict:
@@ -115,14 +131,23 @@ def make_finding(*, severity, title, file_path, line, snippet, description, chec
                  rule_id=None, cwe=None, owasp=None, exploitation=None, recommendation=None,
                  cvss_score=None, cvss_vector=None) -> dict:
     kb_owasp, kb_exploit, kb_fix = lookup(cwe, check)
-    return _cvss_fields(severity, cvss_score, cvss_vector) | {
-        "severity": severity if severity in SEVERITY_ORDER else "Low",
+    severity = severity if severity in SEVERITY_ORDER else "Low"
+    cvss = _cvss_fields(severity, cvss_score, cvss_vector)
+    extra = {}
+    if cvss["cvss_source"] == "scanner":
+        by_score = severity_from_cvss(cvss["cvss_score"])
+        if by_score != severity:
+            extra["_vendor_sev"] = severity
+            severity = by_score
+    return cvss | extra | {
+        "severity": severity,
         "title": _clip(title, 500) or "Untitled finding",
         "file_path": file_path or "(repository)",
         "line": int(line) if isinstance(line, int) or (isinstance(line, str) and line.isdigit()) else None,
         "snippet": _clip(snippet, 6000),
         "description": _clip(description),
-        "exploitation": _clip(exploitation) or kb_exploit,
+        # Scenario text from the CWE knowledge base is generic, so it is labelled as such.
+        "exploitation": _clip(exploitation) or (GENERIC_RISK + kb_exploit),
         "recommendation": _clip(recommendation) or kb_fix,
         "cwe": _clip(cwe, 100) or None,
         "owasp": owasp or kb_owasp,
@@ -213,8 +238,10 @@ def parse_trivy_vulns(data: dict) -> list[dict]:
                        "function is used, apply vendor mitigations, or replace the package.")
             exploit = lookup(cwe, "deps")[1] if cwe_number(cwe) else None
             cvss = v.get("CVSS") or {}
-            src = next((cvss[k] for k in ("nvd", "ghsa", "redhat") if isinstance(cvss.get(k), dict)
-                        and cvss[k].get("V3Score") is not None), None) or {}
+            # One CVSS per CVE: the first source that has a v3 score.
+            src_name = next((k for k in ("nvd", "ghsa", "redhat") if isinstance(cvss.get(k), dict)
+                             and cvss[k].get("V3Score") is not None), None)
+            src = cvss[src_name] if src_name else {}
             line = None
             locs = v.get("Locations") or []
             if locs and isinstance(locs, list):
@@ -232,12 +259,13 @@ def parse_trivy_vulns(data: dict) -> list[dict]:
                 cwe=cwe,
                 owasp="A06:2021 - Vulnerable and Outdated Components",
                 exploitation=(f"{pkg} {installed} is affected by the publicly known vulnerability {vid}. "
-                              + (exploit or lookup(None, "deps")[1])),
+                              + GENERIC_RISK + (exploit or lookup(None, "deps")[1])),
                 recommendation=rec,
                 cvss_score=src.get("V3Score"),
                 cvss_vector=src.get("V3Vector"),
             ) | {"_pkg": pkg, "_installed": installed, "_fixed": fixed, "_vtitle": (v.get("Title") or "")[:300],
-                 "_url": v.get("PrimaryURL") or ""})
+                 "_url": v.get("PrimaryURL") or "", "_cvss_src": (src_name or "").upper().replace("REDHAT", "Red Hat"),
+                 "_vdesc": (v.get("Description") or "")[:3000]})
     return out
 
 
@@ -590,7 +618,7 @@ def sort_key(f: dict):
 
 
 def count_by_severity(findings: list[dict]) -> dict:
-    counts = {s: 0 for s in SEVERITY_ORDER}
+    counts = {s: 0 for s in SEVERITY_ORDER if s != "Info"}  # Info only when present
     for f in findings:
         counts[f["severity"]] = counts.get(f["severity"], 0) + 1
     return counts

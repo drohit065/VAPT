@@ -106,6 +106,7 @@ input:focus, select:focus, .btn:focus-visible { outline: 2px solid var(--teal); 
 .sev-High { background: var(--high); color: #fff; }
 .sev-Medium { background: var(--med); color: #3d2c00; }
 .sev-Low { background: var(--low); color: #22324a; }
+.sev-Info { background: #ECEFF3; color: #3A4556; }
 .sev-None { background: #e3f2ea; color: var(--ok); }
 
 table.list { width: 100%; border-collapse: collapse; }

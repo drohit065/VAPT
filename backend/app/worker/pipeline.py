@@ -34,12 +34,14 @@ from ..normalize import (
     parse_trivy_vulns,
     redact_findings,
     secret_values,
+    sort_key,
 )
 from sqlalchemy import select
 
 from ..findings_mgmt import apply_history, open_counts
 from ..grouping import annotate_line_secret, group_findings, is_secret_finding
 from ..notifier import notify_scan
+from ..severity_policy import apply_policy
 from ..security import assert_public_registry, decrypt_token, parse_image_ref, scrub
 from . import dast
 from . import infra
@@ -564,6 +566,9 @@ def run_scan(scan_id: int) -> None:
         secrets = []
         raw_count = len(all_findings)
         final = group_findings(dedupe(all_findings), scan_root)
+        for change in apply_policy(final):
+            log.info("scan %s: severity policy: %s", scan_id, change)
+        final.sort(key=sort_key)
         previous = db.scalars(
             select(Scan).where(Scan.project_id == scan.project_id, Scan.status == "completed",
                                Scan.id != scan.id).order_by(Scan.id.desc()).limit(1)

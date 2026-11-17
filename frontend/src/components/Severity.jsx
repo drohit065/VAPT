@@ -5,6 +5,7 @@ export const SEV_COLORS = {
   High: { bg: '#C2410C', fg: '#fff' },
   Medium: { bg: '#F5C451', fg: '#3d2c00' },
   Low: { bg: '#DCE6F2', fg: '#22324a' },
+  Info: { bg: '#ECEFF3', fg: '#3A4556' },
 }
 
 export function SevBadge({ level }) {

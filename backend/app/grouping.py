@@ -302,6 +302,58 @@ def minimum_fix(installed: str, cves: list[list[str]]) -> tuple[str | None, bool
     return None, True
 
 
+# A version as advisories write it: dotted (2.13.4.1) or date-style (20230227).
+_VER = r"(?:\d+(?:\.\d+)+(?:[.-]?(?:rc|beta|alpha|m|cr)\d*)?|\d{6,})(?!\.?[A-Za-z0-9])"
+_VLIST = _VER + r"(?:\s*(?:,\s*and|,|and|or)\s*" + _VER + r")*"
+_BOUND_EXCL = re.compile(r"\b(?:before|prior to|earlier than|lower than|older than|below)\s+(?:versions?\s+|v)?("
+                         + _VLIST + ")", re.I)
+_BOUND_INCL = re.compile(r"\b(?:through|up to(?: and including)?)\s+(?:versions?\s+|v)?(" + _VLIST + ")"
+                         r"|\b(" + _VLIST + r")\s+(?:and|or)\s+(?:earlier|prior|below|older|lower)\b", re.I)
+
+
+def _bounds(text: str) -> list[tuple[str, bool]]:
+    """(version, inclusive) upper bounds of the affected range stated in advisory text."""
+    out = []
+    for m in _BOUND_EXCL.finditer(text or ""):
+        out += [(v, False) for v in re.findall(_VER, m.group(1))]
+    for m in _BOUND_INCL.finditer(text or ""):
+        out += [(v, True) for v in re.findall(_VER, m.group(1) or m.group(2))]
+    return out
+
+
+def advisory_check(installed: str, fixed: list[str], text: str) -> str | None:
+    """A 'Verify' note when the advisory's own data says the installed version may not be affected.
+    The finding is never dropped: the scanner's range data can be newer than the advisory text."""
+    if fixed and fixes_cve(installed, fixed):
+        return (f"advisory data is inconsistent: it lists {', '.join(fixed)} as fixed and {installed} is "
+                "already at or above that on its version line. Verify manually.")
+    single = len(_nums(installed)) < 2
+    mine = [(v, inc) for v, inc in _bounds(text)
+            if (len(_nums(v)) < 2) == single and (single or _nums(v)[:1] == _nums(installed)[:1])]
+    if mine and all(vkey(installed) > vkey(v) if inc else vkey(installed) >= vkey(v) for v, inc in mine):
+        stated = ", ".join(("through " if inc else "before ") + v for v, inc in mine)
+        return (f"the advisory text describes affected versions as {stated}; {installed} may be outside "
+                "that range. Verify against the vendor advisory.")
+    return None
+
+
+# Artifacts that moved to new coordinates: the old name never gets a fixed release.
+# old -> (new coordinates, minimum safe version or None, why)
+RELOCATED = {
+    "mysql:mysql-connector-java": (
+        "com.mysql:mysql-connector-j", "8.2.0",
+        "Oracle moved MySQL Connector/J to new Maven coordinates in 8.0.31; the old artifact gets no new "
+        "releases, so no fixed version will ever be published under its old name."),
+    "org.bouncycastle:bcprov-jdk15on": (
+        "org.bouncycastle:bcprov-jdk18on", None,
+        "The jdk15on artifacts stopped at 1.70; newer Bouncy Castle releases are published as jdk18on."),
+    "log4j:log4j": (
+        "org.apache.logging.log4j:log4j-core", None,
+        "Log4j 1.x reached end of life in 2015 and gets no fixes; migrate to Log4j 2 (log4j-1.2-api can "
+        "bridge existing code)."),
+}
+
+
 ECOSYSTEM_FIX = {
     "maven": "Change the version in pom.xml (or in the <dependencyManagement>/parent BOM that manages it), "
              "then rebuild with `mvn -U verify` and re-run your tests.",
@@ -344,20 +396,44 @@ def group_deps(findings: list[dict]) -> list[dict]:
         n = len(items)
         fix, same_major = minimum_fix(installed, [split_fixed(x.get("_fixed")) for x in items])
         unfixed = [x["rule_id"] for x in items if not split_fixed(x.get("_fixed"))]
+        verify = {x["rule_id"]: advisory_check(installed, split_fixed(x.get("_fixed")), x.get("_vdesc") or "")
+                  for x in items}
         lines = []
         for x in items:
             score = f"CVSS {x['cvss_score']:.1f}" if x.get("cvss_score") is not None else "CVSS n/a"
             lines.append(f"{x['rule_id']}  {x['severity']:<8} {score}  {x.get('_vtitle') or ''}".rstrip()
-                         + (f"  (fixed in {x['_fixed']})" if x.get("_fixed") else "  (no fix published)"))
+                         + (f"  (fixed in {x['_fixed']})" if x.get("_fixed") else "  (no fix published)")
+                         + ("  [verify]" if verify[x["rule_id"]] else ""))
         title = f"{pkg} {installed}: {n} known vulnerabilit{'y' if n == 1 else 'ies'}"
+        if all(verify.values()):
+            title += " (verify: may not be affected)"
         desc_lines = [f"{pkg} {installed}, declared in {path}, is affected by {n} publicly known "
                       f"vulnerabilit{'y' if n == 1 else 'ies'}:"]
         for x in items:
-            desc_lines.append(f"- {x['rule_id']} ({x['severity']}"
-                              + (f", CVSS {x['cvss_score']:.1f}" if x.get("cvss_score") is not None else "")
-                              + f"): {x.get('_vtitle') or 'see advisory'}"
-                              + (f" - {x['_url']}" if x.get("_url") else ""))
-        if fix:
+            rating = x["severity"]
+            if x.get("cvss_score") is not None:
+                rating += f", CVSS {x['cvss_score']:.1f}" + (f" {x['_cvss_src']}" if x.get("_cvss_src") else "")
+            if x.get("_vendor_sev"):
+                rating += f"; vendor rated {x['_vendor_sev']}"
+            desc_lines.append(f"- {x['rule_id']} ({rating}): {x.get('_vtitle') or 'see advisory'}"
+                              + (f" - {x['_url']}" if x.get("_url") else "")
+                              + (f"\n  Verify: {verify[x['rule_id']]}" if verify[x["rule_id"]] else ""))
+        if any(x.get("_vendor_sev") for x in items):
+            desc_lines.append("\nSeverity follows the CVSS score shown (9.0+ Critical, 7.0+ High, 4.0+ Medium); "
+                              "where the vendor's own rating differs it is noted.")
+        flagged = sum(1 for v in verify.values() if v)
+        if flagged:
+            desc_lines.append(f"\n{flagged} of {n} need manual verification (see 'Verify' above). They are kept "
+                              "in the report and the totals until confirmed not to apply.")
+        moved = RELOCATED.get(pkg)
+        if moved:
+            new_pkg, min_v, why = moved
+            fix = None
+            unfixed = []
+            rec = (f"{pkg} has moved: {why} Replace the dependency with {new_pkg} "
+                   + (f"{min_v} or later, which fixes the listed vulnerabilit{'y' if n == 1 else 'ies'}."
+                      if min_v else "at its latest release, then re-scan to confirm."))
+        elif fix:
             rec = (f"Upgrade {pkg} from {installed} to {fix} or later: this one version fixes "
                    + ("all" if not unfixed else f"{n - len(unfixed)} of the")
                    + f" {n} listed vulnerabilit{'y' if n == 1 else 'ies'}.")
@@ -369,7 +445,11 @@ def group_deps(findings: list[dict]) -> list[dict]:
         if unfixed:
             rec += (f" No fix is published for {', '.join(unfixed)}: check whether the vulnerable function "
                     "is used, apply vendor mitigations, or replace the package.")
-        rec += " " + ECOSYSTEM_FIX[ecosystem(path)]
+        if moved:
+            rec += (f" Change the groupId and artifactId (and version) in {path} or the BOM that manages it, "
+                    "rebuild and re-run your tests.")
+        else:
+            rec += " " + ECOSYSTEM_FIX[ecosystem(path)]
         g = dict(rep)
         g.update(
             title=title,

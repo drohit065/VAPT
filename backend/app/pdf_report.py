@@ -34,9 +34,11 @@ SEV_BG = {
     "High": colors.HexColor("#C2410C"),
     "Medium": colors.HexColor("#F5C451"),
     "Low": colors.HexColor("#DCE6F2"),
+    "Info": colors.HexColor("#ECEFF3"),
 }
 SEV_FG = {"Critical": colors.white, "High": colors.white,
-          "Medium": colors.HexColor("#3d2c00"), "Low": colors.HexColor("#22324a")}
+          "Medium": colors.HexColor("#3d2c00"), "Low": colors.HexColor("#22324a"),
+          "Info": colors.HexColor("#3A4556")}
 CHECK_LABELS = {"code": "Code flaws (Semgrep)", "deps": "Vulnerable dependencies (Trivy)",
                 "secrets": "Hardcoded secrets (Gitleaks)", "iac": "Docker and Terraform (Trivy config)",
                 "web": "Web security checks", "nuclei": "Known vulnerabilities (Nuclei)",

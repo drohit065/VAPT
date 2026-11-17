@@ -207,10 +207,10 @@ def test_cves_grouped_per_package_with_one_fix_version():
 
 def test_unfixed_cves_are_named():
     data = {"Results": [{"Target": "pom.xml", "Vulnerabilities": [
-        {"VulnerabilityID": "CVE-2023-22102", "PkgName": "mysql:mysql-connector-java", "InstalledVersion": "8.0.29",
+        {"VulnerabilityID": "CVE-2099-1", "PkgName": "org.example:lib", "InstalledVersion": "8.0.29",
          "FixedVersion": "", "Severity": "HIGH"}]}]}
     out = group_deps(parse_trivy_vulns(data))
-    assert "No fix is published for CVE-2023-22102" in out[0]["recommendation"]
+    assert "No fix is published for CVE-2099-1" in out[0]["recommendation"]
 
 
 def test_deps_fingerprint_stable_when_cves_change():

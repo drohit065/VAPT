@@ -27,7 +27,7 @@ def scan_brief(scan: Scan) -> dict:
         "started_at": scan.started_at,
         "finished_at": scan.finished_at,
         "counts": counts,
-        "total": sum(counts.values()),
+        "total": sum(counts.get(s, 0) for s in SEVERITIES),  # Info is never counted
         "risk": risk_level(counts) if scan.status == "completed" else None,
     }
 
