@@ -17,6 +17,45 @@ const CHECK_LABELS = {
   ports: 'Open ports',
   image: 'Container image',
 }
+
+const FENCE = '```'
+
+// Text with ``` fenced code blocks (from the fix suggestions) -> paragraphs and copyable code.
+function splitBlocks(text) {
+  const out = []
+  let rest = text || ''
+  for (;;) {
+    const start = rest.indexOf(FENCE)
+    const end = start >= 0 ? rest.indexOf('\n' + FENCE, start + 3) : -1
+    if (start < 0 || end < 0) {
+      if (rest.trim()) out.push(['text', rest.replace(/^\n+|\n+$/g, '')])
+      return out
+    }
+    if (rest.slice(0, start).trim()) out.push(['text', rest.slice(0, start).replace(/^\n+|\n+$/g, '')])
+    const body = rest.slice(start + 3, end)
+    const nl = body.indexOf('\n')
+    out.push(['code', nl >= 0 ? body.slice(nl + 1) : ''])
+    rest = rest.slice(end + 1 + FENCE.length)
+  }
+}
+
+function CopyCode({ text }) {
+  const [done, setDone] = useState(false)
+  if (!navigator.clipboard) return null
+  return (
+    <button type="button" className="btn secondary small-btn code-copy"
+            onClick={() => navigator.clipboard.writeText(text).then(() => { setDone(true); setTimeout(() => setDone(false), 1500) })}>
+      {done ? 'Copied' : 'Copy'}
+    </button>
+  )
+}
+
+function RichText({ text }) {
+  return splitBlocks(text).map(([kind, part], i) => kind === 'code'
+    ? <div key={i} className="code-wrap"><CopyCode text={part} /><pre className="snippet">{part}</pre></div>
+    : <p key={i} className="pre-wrap">{part}</p>)
+}
+
 const STATUS_LABELS = {
   open: 'Open',
   false_positive: 'False positive',
@@ -156,19 +195,19 @@ function Finding({ f, open, onToggle, onSaved, canEdit, provider }) {
           {f.description && (
             <section>
               <h3>What is wrong</h3>
-              <p className="pre-wrap">{f.description}</p>
+              <RichText text={f.description} />
             </section>
           )}
           {f.exploitation && (
             <section>
               <h3>How it could be exploited</h3>
-              <p className="pre-wrap">{f.exploitation}</p>
+              <RichText text={f.exploitation} />
             </section>
           )}
           {f.recommendation && (
             <section>
               <h3>Recommended fix</h3>
-              <p className="pre-wrap">{f.recommendation}</p>
+              <RichText text={f.recommendation} />
             </section>
           )}
           {f.rule_id && <div className="small muted mono" style={{ marginTop: 10 }}>Rule: {f.rule_id}</div>}

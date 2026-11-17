@@ -18,6 +18,13 @@ import os
 import re
 
 from .normalize import SEVERITY_ORDER, sort_key
+from .remediation import ECOSYSTEM_FIX, ecosystem as _ecosystem, secret_fix
+
+
+def ecosystem(f_or_path) -> str:
+    if isinstance(f_or_path, dict):
+        return f_or_path.get("_eco") or _ecosystem(f_or_path.get("file_path") or "")
+    return _ecosystem(f_or_path)
 from .secret_display import fingerprint as value_fingerprint
 
 # ---------------------------------------------------------------- secret features (worker, pre-masking)
@@ -221,8 +228,7 @@ def group_secrets(findings: list[dict], root: str | None) -> list[dict]:
                                  "not grant access, but it identifies the AWS account and user and is usually "
                                  "paired with a secret stored elsewhere.")
             what = _first_para(rep.get("description")) or f"A {label.lower()} is committed to the repository."
-            fix = ("Rotate immediately: revoke this credential with its provider and issue a new one, then "
-                   "remove it from the code")
+            fix = None
         n = len(locs)
         where = f"Found in {n} location{'s' if n != 1 else ''}" + (" (including Git history)." if in_history else ".")
         desc = "\n\n".join(p for p in [
@@ -231,17 +237,23 @@ def group_secrets(findings: list[dict], root: str | None) -> list[dict]:
             f"characters, and the fingerprint {fp} is the same wherever this credential appears.",
             ("Matched rules: " + ", ".join(rules)) if len(rules) > 1 else "",
         ] if p)
-        fix += (f" at all {n} locations listed" if n > 1 else "") + \
-            ", and load it from a secrets manager or environment variables."
-        if in_history:
-            fix += (" It is also in the Git history: after rotating, purge it from history "
-                    "(git filter-repo or BFG) and force-push, and ask everyone to re-clone.")
+        config_keys = [(x["_secret_config_key"], bool(x.get("_secret_fallback"))) for x in items
+                       if x.get("_secret_config_key")]
+        if kind == "gcp_sa":
+            fix += ((f" at all {n} locations listed" if n > 1 else "")
+                    + ", and load it from a secrets manager or environment variables.")
+            if in_history:
+                fix += (" It is also in the Git history: after rotating, purge it from history "
+                        "(git filter-repo or BFG) and force-push, and ask everyone to re-clone.")
+        else:
+            fix = secret_fix(kind, locs, in_history, config_keys)
         g = dict(rep)
         g.update(
             title=title, severity=severity, scanners=scanners, description=desc, recommendation=fix,
             exploitation=("Anyone who can read this code - developers, CI systems, anyone it is shared with - "
                           "can use the credential directly against the service it belongs to."),
             locations=[{"file": l[0], "line": l[1]} for l in locs] if n > 1 else None,
+            _in_history=in_history,
             _fp_key=f"secret|{fp if kind != 'gcp_sa' else key}",
         )
         if severity != rep["severity"]:
@@ -356,33 +368,6 @@ RELOCATED = {
 }
 
 
-ECOSYSTEM_FIX = {
-    "maven": "Change the version in pom.xml (or in the <dependencyManagement>/parent BOM that manages it), "
-             "then rebuild with `mvn -U verify` and re-run your tests.",
-    "gradle": "Change the version in build.gradle (or the platform/BOM that manages it), then rebuild with "
-              "`gradle build --refresh-dependencies` and re-run your tests.",
-    "npm": "Update package.json, run `npm install` to regenerate package-lock.json and re-run your tests.",
-    "pip": "Update the pinned version, reinstall and re-run your tests.",
-    "go": "Run `go get <module>@<version>` and `go mod tidy`, then re-run your tests.",
-    "other": "Update the declared version, rebuild and re-run your tests.",
-}
-
-
-def ecosystem(path: str) -> str:
-    p = (path or "").lower().rsplit("/", 1)[-1]
-    if p == "pom.xml" or p.endswith(".jar") or p.endswith(".war"):
-        return "maven"
-    if "gradle" in p:
-        return "gradle"
-    if p in ("package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "npm-shrinkwrap.json"):
-        return "npm"
-    if p.startswith("requirements") or p in ("pipfile.lock", "poetry.lock", "pyproject.toml", "uv.lock"):
-        return "pip"
-    if p in ("go.mod", "go.sum"):
-        return "go"
-    return "other"
-
-
 def group_deps(findings: list[dict]) -> list[dict]:
     deps = [f for f in findings if f.get("check") == "deps" and f.get("_pkg")]
     if not deps:
@@ -458,14 +443,14 @@ def group_deps(findings: list[dict]) -> list[dict]:
             rec += (f" It is a transitive dependency (via {via}): first check whether a newer {via} already "
                     f"uses a fixed {pkg}; otherwise pin {pkg}"
                     + (f" {fix}" if fix else "") + " in "
-                    + ("<dependencyManagement> in pom.xml" if ecosystem(path) == "maven" else
-                       "a dependency constraint / override" if ecosystem(path) != "npm" else "`overrides` in package.json")
+                    + ("<dependencyManagement> in pom.xml" if ecosystem(rep) == "maven" else
+                       "a dependency constraint / override" if ecosystem(rep) != "npm" else "`overrides` in package.json")
                     + ".")
         if moved:
             rec += (f" Change the groupId and artifactId (and version) in {path} or the BOM that manages it, "
                     "rebuild and re-run your tests.")
         else:
-            rec += " " + ECOSYSTEM_FIX[ecosystem(path)]
+            rec += " " + ECOSYSTEM_FIX[ecosystem(rep)]
         g = dict(rep)
         g.update(
             title=title,

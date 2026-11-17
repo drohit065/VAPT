@@ -23,6 +23,7 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from .remediation import split_blocks
 from .summary import SEVERITIES, risk_level
 
 NAVY = colors.HexColor("#14213D")
@@ -84,9 +85,9 @@ def _fmt_time(value) -> str:
     return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
-def _wrap_snippet(snippet: str) -> str:
+def _wrap_snippet(snippet: str, max_lines: int = MAX_SNIPPET_LINES) -> str:
     out = []
-    for line in (snippet or "").splitlines()[:MAX_SNIPPET_LINES]:
+    for line in (snippet or "").splitlines()[:max_lines]:
         out.extend(textwrap.wrap(line, SNIPPET_WIDTH, replace_whitespace=False, drop_whitespace=False,
                                  subsequent_indent="    ") or [""])
     return "\n".join(out)
@@ -208,7 +209,10 @@ def _finding_block(i: int, f: dict, width: float) -> list:
     for label, key in (("What is wrong", "description"), ("How it could be exploited", "exploitation"),
                        ("Recommended fix", "recommendation"), ("AI notes", "ai_notes")):
         if f.get(key):
-            block += [_p(label, "label"), _p(f[key])]
+            block += [_p(label, "label")]
+            for kind, part in split_blocks(f[key]):
+                block.append(Preformatted(_wrap_snippet(part, max_lines=80), S["mono"]) if kind == "code"
+                             else _p(part))
     return [CondPageBreak(45 * mm), KeepTogether(block[:3]), *block[3:], Spacer(1, 4 * mm)]
 
 

@@ -43,6 +43,7 @@ from ..findings_mgmt import apply_history, open_counts
 from ..config_checks import scan_config_secrets, scan_spring
 from ..grouping import annotate_line_secret, group_findings, is_secret_finding
 from ..notifier import notify_scan
+from ..remediation import apply_remediation
 from ..severity_policy import apply_policy
 from ..security import assert_public_registry, decrypt_token, parse_image_ref, scrub
 from . import dast
@@ -651,6 +652,7 @@ def run_scan(scan_id: int) -> None:
         for change in apply_policy(final):
             log.info("scan %s: severity policy: %s", scan_id, change)
         final.sort(key=sort_key)
+        apply_remediation(final, scan_root)
         previous = db.scalars(
             select(Scan).where(Scan.project_id == scan.project_id, Scan.status == "completed",
                                Scan.id != scan.id).order_by(Scan.id.desc()).limit(1)

@@ -219,6 +219,10 @@ input[type=file] { font: inherit; max-width: 100%; }
   padding: 10px 12px; border-radius: 6px; overflow-x: auto; margin: 12px 0 0; white-space: pre;
 }
 .pre-wrap { white-space: pre-wrap; word-break: break-word; }
+.finding-body section > p + p, .finding-body section > .code-wrap + p { margin-top: 8px; }
+.code-wrap { position: relative; }
+.code-wrap .snippet { margin-top: 8px; }
+.code-copy { position: absolute; top: 14px; right: 8px; opacity: .85; }
 @media (max-width: 700px) {
   .finding-head { flex-wrap: wrap; }
   .finding-loc { max-width: 100%; text-align: left; width: 100%; }

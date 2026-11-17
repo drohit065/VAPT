@@ -200,7 +200,7 @@ def test_cves_grouped_per_package_with_one_fix_version():
     assert j["severity"] == "High" and j["cvss_score"] == 8.1
     assert "to 2.18.11 or later" in j["recommendation"] and "all 3" in j["recommendation"]
     assert "3.1.4" not in j["recommendation"]
-    assert "mvn -U verify" in j["recommendation"] and "lockfile" not in j["recommendation"]
+    assert "mvn -U verify" in j["recommendation"] and "regenerate the lockfile" not in j["recommendation"] and "Maven has no lockfile" in j["recommendation"]
     assert j["snippet"].count("CVE-") == 3
     assert j["rule_id"] == "pkg:com.fasterxml.jackson.core:jackson-databind"
 

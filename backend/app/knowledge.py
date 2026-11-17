@@ -102,7 +102,7 @@ KB: dict[int, tuple[str, str, str]] = {
     732: (A01, "Overly permissive permissions let other users or processes read or modify sensitive resources.",
           "Grant the minimum permissions required."),
     798: (A07, "Anyone with access to the code or its history can use the hard-coded credential to access the related system.",
-          "Revoke and rotate the credential now, remove it from the code and Git history, and load secrets from a secrets manager or environment variables."),
+          "Rotate immediately: revoke the credential with its provider and issue a new one, remove it from the code, and load secrets from a secrets manager or environment variables."),
     862: (A01, "Missing authorisation lets any authenticated (or anonymous) user perform the action.",
           "Add an authorisation check on the server before the action, deny by default."),
     863: (A01, "Incorrect authorisation logic lets users access data or functions beyond their role.",

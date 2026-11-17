@@ -23,6 +23,7 @@ import os
 import re
 
 from .knowledge import cwe_number, lookup
+from .remediation import ECOSYSTEM_FIX, ecosystem
 from .secret_display import display, display_url_password, is_masked, is_password
 
 # Info: reported for completeness but never counted in totals (summary.SEVERITIES has no Info).
@@ -254,6 +255,7 @@ def parse_trivy_vulns(data: dict) -> list[dict]:
     for res in (data or {}).get("Results", []) or []:
         target = rel_path(res.get("Target", ""), None)
         relationship = trivy_relationships(res)
+        eco = ecosystem(target, res.get("Class") or "", res.get("Type") or "")
         for v in res.get("Vulnerabilities", []) or []:
             vid = v.get("VulnerabilityID", "")
             pkg = v.get("PkgName", "")
@@ -264,8 +266,8 @@ def parse_trivy_vulns(data: dict) -> list[dict]:
             if v.get("PrimaryURL"):
                 desc += f"\n\nAdvisory: {v['PrimaryURL']}"
             if fixed:
-                rec = (f"Upgrade {pkg} from {installed} to {fixed} or later (declared in {target}), "
-                       "regenerate the lockfile and re-run your tests.")
+                rec = (f"Upgrade {pkg} from {installed} to {fixed} or later (declared in {target}). "
+                       + ECOSYSTEM_FIX[eco])
             else:
                 rec = (f"No fixed version of {pkg} is published yet. Check whether the vulnerable "
                        "function is used, apply vendor mitigations, or replace the package.")
@@ -298,7 +300,7 @@ def parse_trivy_vulns(data: dict) -> list[dict]:
                 cvss_vector=src.get("V3Vector"),
             ) | {"_pkg": pkg, "_installed": installed, "_fixed": fixed, "_vtitle": (v.get("Title") or "")[:300],
                  "_url": v.get("PrimaryURL") or "", "_cvss_src": (src_name or "").upper().replace("REDHAT", "Red Hat"),
-                 "_vdesc": (v.get("Description") or "")[:3000]}
+                 "_vdesc": (v.get("Description") or "")[:3000], "_eco": eco}
               | dict(zip(("_rel", "_via"), relationship(v.get("PkgID")))))
     return out
 
@@ -360,15 +362,25 @@ def secret_values(data: list) -> dict[str, str]:
     return out
 
 
-def redact(text: str, secrets) -> str:
+SHORT_SECRET = 12          # shorter values are replaced only as a whole token
+_PLAIN_WORD = re.compile(r"[a-z]{1,7}")  # e.g. "root", "admin": masked in code, not in prose
+
+
+def redact(text: str, secrets, prose: bool = False) -> str:
     """Replace every known secret value in text. `secrets` is {value: shown_as} or a list of values
-    (shown with the default rules)."""
+    (shown with the default rules). Short values are replaced only where they stand alone, so a
+    password such as "root" does not mangle "non-root"; in prose (titles, descriptions, fixes) a
+    short lowercase word is left alone entirely, as it is not recognisable as the secret there."""
     if not text or not secrets:
         return text
     mapping = secrets if isinstance(secrets, dict) else {v: display(v) for v in secrets if v}
     for v in sorted(mapping, key=len, reverse=True):
-        if v and v in text:
+        if not v or v not in text:
+            continue
+        if len(v) >= SHORT_SECRET:
             text = text.replace(v, mapping[v])
+        elif not (prose and _PLAIN_WORD.fullmatch(v)):
+            text = re.sub(r"(?<![\w-])" + re.escape(v) + r"(?![\w-])", lambda _m, s=mapping[v]: s, text)
     return text
 
 
@@ -451,9 +463,9 @@ def redact_findings(findings: list[dict], secrets) -> None:
     Gitleaks, a heuristic for secret-looking assignments, and full masking of snippets of any
     finding whose rule is about secrets (so secrets stay hidden even without Gitleaks)."""
     for f in findings:
-        for field in ("snippet", "description", "title", "recommendation"):
+        for field in ("snippet", "description", "title", "recommendation", "exploitation"):
             if f.get(field):
-                f[field] = redact(f[field], secrets)
+                f[field] = redact(f[field], secrets, prose=field != "snippet")
         if f.get("snippet"):
             f["snippet"] = mask_assignments(f["snippet"])
             if f.get("check") == "secrets" or _SECRET_RULE.search(f.get("rule_id") or ""):

@@ -180,7 +180,7 @@ def scan_config_secrets(root: str) -> tuple[list[dict], dict[str, str]]:
                 recommendation=(f"Remove the literal and read `{key}` from an environment variable or a secret "
                                 "store, e.g. `" + key.rsplit(".", 1)[-1] + ": ${" + re.sub(r"\W", "_", key).upper()
                                 + "}` with no default. Then change the credential: it must be treated as leaked."),
-            ) | secret_features(raw, key))
+            ) | secret_features(raw, key) | {"_secret_fallback": fallback, "_secret_config_key": key})
     return findings, secrets
 
 
