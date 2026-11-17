@@ -127,6 +127,7 @@ function Finding({ f, open, onToggle, onSaved, canEdit, provider }) {
         </span>
         <span className="finding-loc mono">
           {f.file_path}{f.line ? `:${f.line}` : ''}
+          {f.locations?.length > 1 && <span className="muted"> +{f.locations.length - 1} more</span>}
         </span>
       </button>
       {open && (
@@ -143,6 +144,14 @@ function Finding({ f, open, onToggle, onSaved, canEdit, provider }) {
             )}
           </div>
           {f.cvss_vector && <div className="small muted mono" style={{ marginTop: 6 }}>{f.cvss_vector}</div>}
+          {f.locations?.length > 1 && (
+            <section>
+              <h3>Locations ({f.locations.length})</h3>
+              <ul className="locations mono small">
+                {f.locations.map((l, i) => <li key={i}>{l.file}{l.line ? `:${l.line}` : ''}</li>)}
+              </ul>
+            </section>
+          )}
           {f.snippet && <pre className="snippet">{f.snippet}</pre>}
           {f.description && (
             <section>

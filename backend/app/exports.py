@@ -7,9 +7,15 @@ import io
 from .findings_mgmt import STATUSES
 
 CSV_FIELDS = ["severity", "cvss_score", "cvss_source", "status", "is_new", "title", "file_path", "line",
-              "check", "scanners", "rule_id", "cwe", "owasp", "description", "exploitation",
+              "locations", "check", "scanners", "rule_id", "cwe", "owasp", "description", "exploitation",
               "recommendation", "status_note", "fingerprint"]
 SARIF_LEVEL = {"Critical": "error", "High": "error", "Medium": "warning", "Low": "note"}
+
+
+def format_locations(locations) -> str:
+    """'a.yml:4; b.yml:10' for a grouped finding's locations ('' when it has one location)."""
+    return "; ".join(l.get("file", "") + (f":{l['line']}" if l.get("line") else "")
+                     for l in (locations or []) if isinstance(l, dict))
 
 
 def _cell(value) -> str:
@@ -27,7 +33,8 @@ def to_csv(findings: list[dict]) -> str:
     w = csv.writer(buf)
     w.writerow(CSV_FIELDS)
     for f in findings:
-        row = dict(f, status=STATUSES.get(f.get("status"), f.get("status")))
+        row = dict(f, status=STATUSES.get(f.get("status"), f.get("status")),
+                   locations=format_locations(f.get("locations")))
         w.writerow([_cell(row.get(k)) for k in CSV_FIELDS])
     return buf.getvalue()
 
@@ -50,17 +57,20 @@ def to_sarif(scan: dict, findings: list[dict]) -> dict:
                     "security-severity": str(f.get("cvss_score") or ""),
                 },
             }
-        if is_url:
-            location = {"physicalLocation": {"artifactLocation": {"uri": f["file_path"]}}}
-        else:
-            region = {"startLine": f["line"]} if f.get("line") else {}
-            location = {"physicalLocation": {"artifactLocation": {"uri": f["file_path"],
-                                                                   "uriBaseId": "SRCROOT"}, **({"region": region} if region else {})}}
+        def sarif_location(path, line):
+            if is_url:
+                return {"physicalLocation": {"artifactLocation": {"uri": path}}}
+            region = {"startLine": line} if line else {}
+            return {"physicalLocation": {"artifactLocation": {"uri": path, "uriBaseId": "SRCROOT"},
+                                         **({"region": region} if region else {})}}
+
+        locs = [(l.get("file"), l.get("line")) for l in (f.get("locations") or []) if isinstance(l, dict)] \
+            or [(f["file_path"], f.get("line"))]
         result = {
             "ruleId": rid,
             "level": SARIF_LEVEL.get(f["severity"], "note"),
             "message": {"text": f"{f['title']}\n\n{f.get('description') or ''}"[:4000]},
-            "locations": [location],
+            "locations": [sarif_location(p, ln) for p, ln in locs[:100]],
             "partialFingerprints": {"vaptFingerprint/v1": f.get("fingerprint") or ""},
             "properties": {"severity": f["severity"], "status": f.get("status"), "scanners": f.get("scanners")},
         }

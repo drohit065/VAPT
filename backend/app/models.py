@@ -117,6 +117,9 @@ class Finding(Base):
     cvss_source: Mapped[str | None] = mapped_column(String(20), nullable=True)  # scanner | estimated
     ticket_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
     ticket_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Every place a grouped issue occurs ([{"file", "line"}]), e.g. one credential in several files.
+    # None when the issue has a single location (file_path / line).
+    locations: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     scan: Mapped[Scan] = relationship(back_populates="findings")
 

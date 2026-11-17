@@ -210,6 +210,7 @@ input[type=file] { font: inherit; max-width: 100%; }
 .finding-body { padding: 4px 14px 14px; border-top: 1px solid var(--border); background: #fbfcfd; }
 .finding-body h3 { font-size: 14px; margin: 14px 0 4px; }
 .finding-body p { margin: 0; }
+.finding-body .locations { margin: 0; padding-left: 18px; max-height: 220px; overflow: auto; overflow-wrap: anywhere; }
 .finding-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .tag { background: #e8edf3; color: var(--text); border-radius: 4px; padding: 1px 8px; }
 .snippet {

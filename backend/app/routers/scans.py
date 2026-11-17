@@ -311,6 +311,7 @@ def finding_dict(f: Finding) -> dict:
         "status_updated_at": f.status_updated_at, "is_new": f.is_new,
         "cvss_score": f.cvss_score, "cvss_vector": f.cvss_vector, "cvss_source": f.cvss_source,
         "ticket_key": f.ticket_key, "ticket_url": f.ticket_url,
+        "locations": f.locations or [],
     }
 
 

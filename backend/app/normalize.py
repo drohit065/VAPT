@@ -236,7 +236,8 @@ def parse_trivy_vulns(data: dict) -> list[dict]:
                 recommendation=rec,
                 cvss_score=src.get("V3Score"),
                 cvss_vector=src.get("V3Vector"),
-            ))
+            ) | {"_pkg": pkg, "_installed": installed, "_fixed": fixed, "_vtitle": (v.get("Title") or "")[:300],
+                 "_url": v.get("PrimaryURL") or ""})
     return out
 
 
@@ -428,8 +429,17 @@ def parse_gitleaks(data: list, root: str | None = None) -> list[dict]:
             rule_id=rule,
             cwe="CWE-798: Use of Hard-coded Credentials",
             owasp="A07:2021 - Identification and Authentication Failures",
-        ) | {"_commit": commit})
+        ) | {"_commit": commit, "_in_history": bool(commit)} | _secret_features_of(g))
     return out
+
+
+def _secret_features_of(g: dict) -> dict:
+    """Fingerprint + non-secret features of a Gitleaks match (see grouping.secret_features)."""
+    from .grouping import name_before, secret_features
+    raw = str(g.get("Secret") or "")
+    if len(raw) < 4 or raw == "REDACTED":
+        return {}
+    return secret_features(raw, name_before(str(g.get("Match") or ""), raw))
 
 
 # ---------------------------------------------------------------- Trivy secrets (container images)
@@ -549,6 +559,12 @@ def dedupe(findings: list[dict]) -> list[dict]:
         for s in f["scanners"]:
             if s not in cur["scanners"]:
                 cur["scanners"].append(s)
+        rules = sorted({r for r in (cur.get("rule_id"), f.get("rule_id"), *cur.get("_rules", []),
+                                    *f.get("_rules", [])) if r})
+        # Secret features (fingerprint etc.) survive whichever duplicate is kept.
+        keep_secret = {k: v for k, v in cur.items() if k.startswith("_secret") or k == "_in_history"}
+        keep_secret.update({k: v for k, v in f.items() if (k.startswith("_secret") or k == "_in_history")
+                            and v and not keep_secret.get(k)})
         if SEVERITY_ORDER[f["severity"]] < SEVERITY_ORDER[cur["severity"]]:
             keep_scanners, keep_commits = cur["scanners"], cur["_commits"]
             cur.clear()
@@ -557,6 +573,7 @@ def dedupe(findings: list[dict]) -> list[dict]:
             for field in ("snippet", "cwe", "owasp", "description"):
                 if not cur.get(field) and f.get(field):
                     cur[field] = f[field]
+        cur.update(keep_secret, _rules=rules)
     result = []
     for f in merged.values():
         commits = f.pop("_commits", [])

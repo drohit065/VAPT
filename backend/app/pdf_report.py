@@ -143,8 +143,7 @@ def _top_table(findings: list[dict], width: float) -> Table:
     rows = [[Paragraph("<b>Severity</b>", S["cell"]), Paragraph("<b>Finding</b>", S["cell"]),
              Paragraph("<b>Location</b>", S["cell"])]]
     for f in findings:
-        loc = f["file_path"] + (f":{f['line']}" if f.get("line") else "")
-        rows.append([_sev_cell(f["severity"]), _p(f["title"], "cell"), _p(loc, "cell")])
+        rows.append([_sev_cell(f["severity"]), _p(f["title"], "cell"), _p(_location(f), "cell")])
     t = Table(rows, colWidths=[20 * mm, width * 0.5, width - 20 * mm - width * 0.5], repeatRows=1)
     t.setStyle(TableStyle([
         ("LINEBELOW", (0, 0), (-1, -1), 0.4, BORDER),
@@ -155,8 +154,26 @@ def _top_table(findings: list[dict], width: float) -> Table:
     return t
 
 
-def _finding_block(i: int, f: dict, width: float) -> list:
+def _location(f: dict) -> str:
+    """First location, plus how many more a grouped finding has."""
     loc = f["file_path"] + (f":{f['line']}" if f.get("line") else "")
+    extra = len(f.get("locations") or []) - 1
+    return loc + (f" (+{extra} more)" if extra > 0 else "")
+
+
+MAX_LOCATIONS = 60
+
+
+def _locations_list(f: dict) -> str:
+    locs = [l for l in (f.get("locations") or []) if isinstance(l, dict)]
+    lines = [l.get("file", "") + (f":{l['line']}" if l.get("line") else "") for l in locs[:MAX_LOCATIONS]]
+    if len(locs) > MAX_LOCATIONS:
+        lines.append(f"... and {len(locs) - MAX_LOCATIONS} more")
+    return "\n".join(lines)
+
+
+def _finding_block(i: int, f: dict, width: float) -> list:
+    loc = _location(f)
     head = Table([[_sev_cell(f["severity"]), _p(f"{i}. {f['title']}", "h2")]],
                  colWidths=[20 * mm, width - 20 * mm])
     head.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
@@ -179,8 +196,11 @@ def _finding_block(i: int, f: dict, width: float) -> list:
     if f.get("ai_verdict"):
         meta.append(f"AI review: {f['ai_verdict']}")
     block = [head, _p("  |  ".join(meta), "small")]
+    if len(f.get("locations") or []) > 1:
+        block += [_p(f"Locations ({len(f['locations'])})", "label"), Preformatted(_locations_list(f), S["mono"])]
     if f.get("snippet"):
-        block += [_p("Code", "label"), Preformatted(_wrap_snippet(f["snippet"]), S["mono"])]
+        label = "Vulnerabilities" if f.get("check") == "deps" else "Code"
+        block += [_p(label, "label"), Preformatted(_wrap_snippet(f["snippet"]), S["mono"])]
     if f.get("status_note"):
         block += [_p("Status note", "label"), _p(f["status_note"])]
     for label, key in (("What is wrong", "description"), ("How it could be exploited", "exploitation"),

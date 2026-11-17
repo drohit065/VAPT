@@ -117,6 +117,10 @@ def ticket_text(f: dict, project_name: str, scan_id: int, app_url: str) -> tuple
     if app_url:
         lines.append(f"**Report:** {app_url.rstrip('/')}/scans/{scan_id}/report")
     body = "\n".join(lines)
+    locs = [l for l in (f.get("locations") or []) if isinstance(l, dict)]
+    if len(locs) > 1:
+        body += f"\n\n**All locations ({len(locs)})**\n" + "\n".join(
+            f"- `{l.get('file', '')}{':' + str(l['line']) if l.get('line') else ''}`" for l in locs[:100])
     if f.get("snippet"):
         body += "\n\n**Evidence**\n```\n" + f["snippet"][:3000] + "\n```"
     for label, key in (("What is wrong", "description"), ("How it could be exploited", "exploitation"),

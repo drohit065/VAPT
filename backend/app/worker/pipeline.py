@@ -38,6 +38,7 @@ from ..normalize import (
 from sqlalchemy import select
 
 from ..findings_mgmt import apply_history, open_counts
+from ..grouping import annotate_line_secret, group_findings, is_secret_finding
 from ..notifier import notify_scan
 from ..security import assert_public_registry, decrypt_token, parse_image_ref, scrub
 from . import dast
@@ -554,9 +555,15 @@ def run_scan(scan_id: int) -> None:
         steps.start("report")
         # Credentials found in the code are shown partially + fingerprint; the operator's own scan
         # credentials (login headers, registry login) are never shown at all.
+        # Before masking: fingerprint the value on each secret-type line (only the fingerprint is kept),
+        # so the same credential found by different rules and files can be grouped.
+        for f in all_findings:
+            if is_secret_finding(f):
+                annotate_line_secret(f, list(secrets))
         redact_findings(all_findings, {**secrets, **{v: "REDACTED" for v in secret_values_auth if v}})
         secrets = []
-        final = dedupe(all_findings)
+        raw_count = len(all_findings)
+        final = group_findings(dedupe(all_findings), scan_root)
         previous = db.scalars(
             select(Scan).where(Scan.project_id == scan.project_id, Scan.status == "completed",
                                Scan.id != scan.id).order_by(Scan.id.desc()).limit(1)
@@ -568,8 +575,8 @@ def run_scan(scan_id: int) -> None:
             db.add(Finding(scan_id=scan.id, **{k: v for k, v in f.items() if not k.startswith("_")}))
         scan.counts = open_counts(final)
         scan.notes = notes
-        removed = len(all_findings) - len(final)
-        detail = f"{len(final)} finding(s)" + (f", {removed} duplicate(s) merged" if removed else "")
+        detail = f"{len(final)} unique issue(s)" + (f" from {raw_count} raw scanner match(es)"
+                                                     if raw_count != len(final) else "")
         if previous:
             detail += f"; vs scan #{previous.id}: {diff['new']} new, {diff['fixed']} fixed"
         steps.finish("report", detail=detail)

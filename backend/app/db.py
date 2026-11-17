@@ -71,4 +71,5 @@ MIGRATIONS = [
     "ALTER TABLE findings ADD COLUMN IF NOT EXISTS cvss_source VARCHAR(20)",
     "ALTER TABLE findings ADD COLUMN IF NOT EXISTS ticket_key VARCHAR(100)",
     "ALTER TABLE findings ADD COLUMN IF NOT EXISTS ticket_url VARCHAR(500)",
+    "ALTER TABLE findings ADD COLUMN IF NOT EXISTS locations JSON",
 ]

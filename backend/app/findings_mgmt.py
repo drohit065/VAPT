@@ -33,6 +33,9 @@ def _code_line(snippet: str, line: int | None) -> str:
 def fingerprint(f: dict) -> str:
     """Stable identity of an issue across scans. Line numbers are left out (code moves);
     for code findings the flagged source line is used instead."""
+    if f.get("_fp_key"):
+        # Grouped findings (grouping.py): one identity per credential / package / concept.
+        return hashlib.sha256(("grouped|" + f["_fp_key"]).encode("utf-8", errors="replace")).hexdigest()
     check = f.get("check") or ""
     rule = (f.get("rule_id") or "").lower()
     path = f.get("file_path") or ""
