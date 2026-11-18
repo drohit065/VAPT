@@ -119,8 +119,8 @@ def norm_key(key: str) -> str:
 # ---------------------------------------------------------------- hardcoded passwords in config
 
 # Matched against the last key segment with '-' and '_' removed (Spring relaxed binding).
-_SECRET_KEY = re.compile(r"(password|passwd|pwd|secret|credentials?|apikey|accesskey|privatekey|token|"
-                         r"passphrase|authkey|signingkey)$|^(password|secret)", re.I)
+_SECRET_KEY = re.compile(r"(passwords?|passwds?|pwds?|secrets?|credentials?|apikeys?|accesskeys?|privatekeys?|token|"
+                         r"passphrases?|authkeys?|signingkeys?)$|^(password|secret)", re.I)
 _NOT_SECRET_KEY = re.compile(r"(url|uri|endpoint|expir\w*|validity|ttl|length|size|header|name|type|path|file|"
                              r"location|enabled|encoder|algorithm|policy|prefix|suffix|timeout|duration|time|"
                              r"seconds|regex|pattern|format|mode|count|attempts|strength|issuer|audience|required|"
@@ -162,6 +162,10 @@ def scan_config_secrets(root: str) -> tuple[list[dict], dict[str, str]]:
                 continue
             raw, fallback = hit
             secrets.setdefault(raw, display(raw, rule_id="password", name=key))
+            # a list of credentials ('pw1,pw2'): each item is masked wherever it appears on its own
+            for item in re.split(r"\s*[,;|]\s*", raw):
+                if len(item) >= 4 and item != raw:
+                    secrets.setdefault(item, display(item, rule_id="password", name=key))
             test = bool(_TEST_PATH.search("/" + rel))
             how = (f"as the default fallback in `${{...:default}}` for `{key}`" if fallback
                    else f"as the value of `{key}`")

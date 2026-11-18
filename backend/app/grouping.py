@@ -179,6 +179,14 @@ def group_secrets(findings: list[dict], root: str | None) -> list[dict]:
                     aws_secret_at.setdefault(x["file_path"], []).append(
                         (x["line"], x["_secret_fp"], _aws_stem(_key_name(x))))
 
+    # Where passwords are (key name contains "pass"), to recognise AWS SES SMTP user name + password.
+    password_at: dict[str, list[tuple[int, str]]] = {}
+    for key, items in groups.items():
+        if group_kind(key, items) in ("password", "generic"):
+            for x in items:
+                if x.get("line") and "pass" in _key_name(x).lower():
+                    password_at.setdefault(x["file_path"], []).append((x["line"], x["_secret_fp"]))
+
     out = []
     for key, items in groups.items():
         kind = group_kind(key, items)
@@ -216,6 +224,7 @@ def group_secrets(findings: list[dict], root: str | None) -> list[dict]:
             elif kind == "aws_key_id":
                 pairs = []
                 stem_at = {_loc(x): _aws_stem(_key_name(x)) for x in items}
+                stem_name_at = {_loc(x): _key_name(x) for x in items}
                 for loc in locs:
                     # A secret within 3 lines: the one whose key name matches (AWS_S3_ACCESS_KEY ->
                     # AWS_S3_SECRET_KEY) first, then the nearest (a tie goes to the line below).
@@ -227,10 +236,20 @@ def group_secrets(findings: list[dict], root: str | None) -> list[dict]:
                 # credential, an access key pair.
                 if pairs and len({s for _, s in pairs}) == 1 and 2 * len(pairs) >= len(locs):
                     pair_secret = pairs[0][1]
+                smtp = [] if pairs else [s for loc in locs if loc[1] and _USER_KEY.search(stem_name_at.get(loc, ""))
+                                          for (l, s) in password_at.get(loc[0], []) if 0 < abs(l - loc[1]) <= 2]
                 if pairs:
                     severity = "Critical"
                     notes.append("A secret access key (" + ", ".join(sorted({s for _, s in pairs}))
                                  + ") is stored right next to this key ID, so together they grant access to AWS.")
+                elif smtp:
+                    # AWS SES SMTP: the access key ID is the SMTP user name, the SMTP password sits next to it
+                    severity = "High"
+                    title = f"Hardcoded AWS SES SMTP credentials (user {fp})"
+                    notes.append("This access key ID is used as an SMTP user name, with a password ("
+                                 + ", ".join(sorted(set(smtp))) + ") next to it: together they are AWS SES SMTP "
+                                 "credentials. Anyone with them can send email as your verified domains (phishing "
+                                 "that passes SPF/DKIM) until they are rotated.")
                 else:
                     severity = "Medium"
                     notes.append("No secret access key was found next to this key ID. An access key ID alone does "
@@ -239,7 +258,8 @@ def group_secrets(findings: list[dict], root: str | None) -> list[dict]:
             what = _first_para(rep.get("description")) or f"A {label.lower()} is committed to the repository."
             fix = None
         n = len(locs)
-        where = f"Found in {n} location{'s' if n != 1 else ''}" + (" (including Git history)." if in_history else ".")
+        where = (f"Found in {n} location{'s' if n != 1 else ''}" if kind != "gcp_sa" else
+                 "The whole file is the credential") + (" (including Git history)." if in_history else ".")
         desc = "\n\n".join(p for p in [
             what, *notes, where,
             "The value is never shown in full: values of 20+ characters show only their first and last 4 "
@@ -249,8 +269,7 @@ def group_secrets(findings: list[dict], root: str | None) -> list[dict]:
         config_keys = [(x["_secret_config_key"], bool(x.get("_secret_fallback"))) for x in items
                        if x.get("_secret_config_key")]
         if kind == "gcp_sa":
-            fix += ((f" at all {n} locations listed" if n > 1 else "")
-                    + ", and load it from a secrets manager or environment variables.")
+            fix += f" ({key[3:]}) and add it to .gitignore."
             if in_history:
                 fix += (" It is also in the Git history: after rotating, purge it from history "
                         "(git filter-repo or BFG) and force-push, and ask everyone to re-clone.")
@@ -262,7 +281,7 @@ def group_secrets(findings: list[dict], root: str | None) -> list[dict]:
             check="secrets",
             exploitation=("Anyone who can read this code - developers, CI systems, anyone it is shared with - "
                           "can use the credential directly against the service it belongs to."),
-            locations=[{"file": l[0], "line": l[1]} for l in locs] if n > 1 else None,
+            locations=[{"file": l[0], "line": l[1]} for l in locs] if n > 1 and kind != "gcp_sa" else None,
             _in_history=in_history,
             _fp_key=f"secret|{fp if kind != 'gcp_sa' else key}",
             _secret_kind=kind, _locs=locs, _config_keys=config_keys, _all_rules=rules, _pair_secret=pair_secret,
@@ -271,6 +290,8 @@ def group_secrets(findings: list[dict], root: str | None) -> list[dict]:
         out.append(g)
     return rest + merge_aws_pairs(out)
 
+
+_USER_KEY = re.compile(r"user(name)?$|smtp.?user|mail.?user", re.I)
 
 _AWS_NAME_WORDS = {"aws", "access", "secret", "key", "keys", "id", "accesskey", "secretkey", "accesskeyid",
                    "secretaccesskey", "awsaccesskeyid", "awssecretaccesskey"}

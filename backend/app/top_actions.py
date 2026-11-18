@@ -16,6 +16,7 @@ SUPPRESSED = {"false_positive", "accepted_risk", "fixed"}
 _SECRET_LABEL = {
     "aws_secret": ("AWS secret access key", "AWS secret access keys"),
     "aws_key_id": ("AWS access key ID", "AWS access key IDs"),
+    "aws_smtp": ("AWS SES SMTP login", "AWS SES SMTP logins"),
     "private_key": ("private key", "private keys"),
     "gcp_api_key": ("Google API key", "Google API keys"),
     "gcp_sa": ("GCP service account key", "GCP service account keys"),
@@ -70,6 +71,8 @@ def _short_pkg(pkg: str) -> str:
 def _secret_kind(f: dict) -> str:
     if (f.get("title") or "").startswith("Hardcoded AWS access key pair"):
         return "aws_pair"
+    if (f.get("title") or "").startswith("Hardcoded AWS SES SMTP"):
+        return "aws_smtp"
     return f.get("_secret_kind") or "generic"
 
 

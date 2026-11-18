@@ -24,7 +24,7 @@ import re
 
 from .knowledge import cwe_number, lookup
 from .remediation import ECOSYSTEM_FIX, ecosystem
-from .secret_display import display, display_url_password, is_masked, is_password
+from .secret_display import display, display_url_password, fingerprint, is_masked, is_password
 
 # Info: reported for completeness but never counted in totals (summary.SEVERITIES has no Info).
 SEVERITY_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
@@ -448,6 +448,9 @@ _KEY_PART = re.compile(r"""^(\s*(?:-\s+)?(?:export\s+)?["']?[A-Za-z_][\w.\-]*["'
 # PascalCase or lowercase words (no digits; random tokens almost never fit these shapes).
 _IDENT_PART = r"(?:[A-Z]+(?:_[A-Z]+)+|[a-z]+(?:_[a-z]+)*|[a-z]+(?:[A-Z][a-z]+)+|(?:[A-Z][a-z]+)+)"
 _IDENTIFIER = re.compile(_IDENT_PART + r"(?:\." + _IDENT_PART + r")*(?:\(\))?")
+# Hostnames and URL paths in lowercase ('//db.prod.rds.amazonaws.com', '3306/caprod'): not secrets.
+# Random tokens almost always contain uppercase letters; a lowercase value needs '.' or '/' to match.
+_HOST_OR_PATH = re.compile(r"(?=[^./]*[./])/*[a-z0-9-]+(?:[./:][a-z0-9_-]+)*/?")
 
 
 def mask_secret_snippet(text: str, rule_id: str = "") -> str:
@@ -456,30 +459,65 @@ def mask_secret_snippet(text: str, rule_id: str = "") -> str:
     if not text:
         return text
     pw = is_password(rule_id)
+    key_material = "private-key" in (rule_id or "").lower() or "PRIVATE KEY" in text
+
+    def shown(v):
+        # private key material: no characters at all, not even first / last 4
+        return f"{'*' * 8} {fingerprint(v)}" if key_material else display(v, rule_id="password" if pw else rule_id)
 
     def lit(m):
         v = m.group(2)
-        return m.group(0) if is_masked(v) else m.group(1) + display(v, rule_id="password" if pw else rule_id) + m.group(1)
+        return m.group(0) if is_masked(v) else m.group(1) + shown(v) + m.group(1)
 
     def tok(m):
         v = m.group(0)
-        if is_masked(v) or _IDENTIFIER.fullmatch(v):
+        if is_masked(v) or _IDENTIFIER.fullmatch(v) or _HOST_OR_PATH.fullmatch(v):
             return v
-        return display(v, rule_id="password" if pw else rule_id)
+        return shown(v)
 
     out = []
     for line in text.splitlines():
         prefix, sep, code = line.partition(" | ")
         if not sep:
             prefix, code = "", line
+        code = mask_pem(code)
         # `key: value` / `key = value`: only the value is masked, the key name is always shown
         m = _KEY_PART.match(code)
         key, value = (m.group(1), m.group(2)) if m else ("", code)
         # lit()/tok() leave already-masked values alone, so mixed lines are handled too
         value = _QUOTED_ANY.sub(lit, value)
         value = _LONG_TOKEN.sub(tok, value)
+        value = mask_list_rest(value)
         out.append(prefix + sep + key + value)
     return "\n".join(out)
+
+
+# A private key written inline (JSON "\n" escapes, or a one-line PEM): everything from BEGIN to END,
+# or to the end of the line, is key material.
+_PEM_INLINE = re.compile(r"-----BEGIN ([A-Z ]*)PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)")
+
+
+def mask_pem(text: str) -> str:
+    def repl(m):
+        kind = m.group(1).strip()
+        return f"[{kind + ' ' if kind else ''}private key, hidden] {fingerprint(m.group(0))}"
+    return _PEM_INLINE.sub(repl, text)
+
+
+# Masked value followed or preceded by more list items: 'masked fp:x,Test@1234' or 'abc;masked fp:x'.
+# A list of credentials leaks the unmasked items unless they are masked too.
+_MASK_MARK = r"(?:\*{4,}[^\s'\"`,;|]*\s+fp:[0-9a-f]{8}|\*{4,}\([^)]*\)|REDACTED)"
+_LIST_AFTER = re.compile(r"(" + _MASK_MARK + r")((?:[,;|][^\s'\"`,;|#]+)+)")
+_LIST_BEFORE = re.compile(r"((?:[^\s'\"`,;|#:=]+[,;|])+)(" + _MASK_MARK + r")")
+
+
+def mask_list_rest(value: str) -> str:
+    def after(m):
+        return m.group(1) + re.sub(r"[^,;|]+", "********", m.group(2))
+
+    def before(m):
+        return re.sub(r"[^,;|]+", "********", m.group(1)) + m.group(2)
+    return _LIST_BEFORE.sub(before, _LIST_AFTER.sub(after, value))
 
 
 def redact_findings(findings: list[dict], secrets) -> None:
@@ -491,9 +529,10 @@ def redact_findings(findings: list[dict], secrets) -> None:
             if f.get(field):
                 f[field] = redact(f[field], secrets, prose=field != "snippet")
         if f.get("snippet"):
-            f["snippet"] = mask_assignments(f["snippet"])
+            f["snippet"] = mask_pem(mask_assignments(f["snippet"]))
             if f.get("check") == "secrets" or _SECRET_RULE.search(f.get("rule_id") or ""):
                 f["snippet"] = mask_secret_snippet(f["snippet"], f.get("rule_id") or "")
+            f["snippet"] = "\n".join(mask_list_rest(line) for line in f["snippet"].splitlines())
 
 
 def _rule_label(rule: str) -> str:

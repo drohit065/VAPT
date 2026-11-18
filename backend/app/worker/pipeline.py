@@ -53,6 +53,7 @@ from . import dast
 from . import infra
 from . import zap as zap_mod
 from . import detect as detect_mod
+from .maven_cache import NOT_FOUND, PomCache, link_home, missing_poms
 from .fetch import FetchError, clone, extract_zip, remove_tree, single_top_dir
 
 log = logging.getLogger("vapt.worker")
@@ -134,7 +135,7 @@ def tool_env(home: str) -> dict:
     return env
 
 
-POM_RETRY_WAIT = 45  # seconds to wait before retrying a rate-limited Maven Central resolution
+MAX_POM_ROUNDS = 8  # Trivy runs: each can reveal the next level of parent POMs / BOMs to download
 
 
 def run_tool(cmd: list[str], cwd: str, home: str, timeout: float,
@@ -287,7 +288,7 @@ def semgrep_meta(data: dict, src: str, meta: dict) -> None:
 
 _POM_FETCH_FAIL = re.compile(r"\[pom\] Failed to fetch.*?statusCode=(\d+)")
 _POM_NO_VERSION = re.compile(r'\[pom\] Dependency version cannot be determined\.\s+GroupID="([^"]+)"\s+ArtifactID="([^"]+)"')
-_POM_NOT_FOUND = re.compile(r'\[pom\] Repository error\s+err="([^"\s]+) was not found in local/remote')
+_POM_NOT_FOUND = NOT_FOUND
 
 
 def pom_resolution_problems(log: str) -> dict:
@@ -304,19 +305,33 @@ def pom_resolution_problems(log: str) -> dict:
 def check_deps(src, out_dir, home, budget, notes: list | None = None):
     out = os.path.join(out_dir, "trivy-fs.json")
     # --list-all-pkgs: package relationships (direct / indirect and who pulls each one in).
-    # --debug (not --quiet): the log is the only place Trivy says that a POM download failed.
-    cmd = ["trivy", "fs", "--scanners", "vuln", "--list-all-pkgs", "--format", "json", "--output", out, "--debug",
-           "--timeout", f"{int(budget)}s", src]
-    started = time.monotonic()
-    proc = run_tool(cmd, out_dir, home, budget)
+    # --offline-scan: Trivy reads Maven POMs only from the shared cache ($HOME/.m2/repository), so it
+    # is never rate limited; --debug: its log names each POM it could not find, which we download
+    # into the cache before running it again (see maven_cache).
+    cmd = ["trivy", "fs", "--scanners", "vuln", "--list-all-pkgs", "--offline-scan", "--format", "json",
+           "--output", out, "--debug", "--timeout", "0s", src]
+    deadline = time.monotonic() + budget
+    link_home(home, CACHE_DIR)
+    cache = PomCache(CACHE_DIR)
+    tried: set[str] = set()
+    rounds = 0
+    while True:
+        remaining = deadline - time.monotonic()
+        cmd[cmd.index("--timeout") + 1] = f"{max(int(remaining), 1)}s"
+        proc = run_tool(cmd, out_dir, home, remaining)
+        rounds += 1
+        missing = [c for c in missing_poms(proc.stderr) if c not in tried]
+        if proc.returncode != 0 or not missing or rounds >= MAX_POM_ROUNDS or deadline - time.monotonic() < 30:
+            break
+        fetch_deadline = time.monotonic() + min((deadline - time.monotonic()) / 2, 300)
+        fetched = 0
+        for coords in missing:
+            tried.add(coords)
+            fetched += cache.fetch(coords, fetch_deadline)
+        if not fetched:
+            break
+    cache.save()
     problems = pom_resolution_problems(proc.stderr)
-    # Maven Central rate limiting (HTTP 429) is usually short-lived: wait and try once more.
-    remaining = budget - (time.monotonic() - started)
-    if problems["throttled"] and remaining > 4 * POM_RETRY_WAIT:
-        time.sleep(POM_RETRY_WAIT)
-        cmd[cmd.index("--timeout") + 1] = f"{int(remaining - POM_RETRY_WAIT)}s"
-        proc = run_tool(cmd, out_dir, home, remaining - POM_RETRY_WAIT)
-        problems = pom_resolution_problems(proc.stderr)
     data = _load_json(out)
     if data is None or proc.returncode != 0:
         raise RuntimeError(f"Trivy failed: {_tail(proc.stderr)}")
@@ -325,9 +340,11 @@ def check_deps(src, out_dir, home, budget, notes: list | None = None):
     detail = f"{len(findings)} vulnerable package(s) in {len(targets)} manifest(s)"
     if not targets:
         detail = "No supported lockfiles or manifests found"
+    if cache.downloaded:
+        detail += f"; {cache.downloaded} Maven POM file(s) downloaded to the shared cache"
     if problems["unresolved"] or problems["missing_poms"]:
-        why = ("Maven Central refused the downloads (HTTP 429, rate limited)" if problems["throttled"]
-               else "the POM files could not be downloaded from Maven Central")
+        why = ("the POM files could not be downloaded (network error or rate limit)" if cache.failed else
+               "the POM files are not published on Maven Central (private or internal artifacts)")
         names = problems["unresolved"] or problems["missing_poms"]
         detail += f"; INCOMPLETE: {len(names)} Maven dependenc{'y' if len(names) == 1 else 'ies'} not checked"
         if notes is not None:
