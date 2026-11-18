@@ -8,9 +8,17 @@ def test_long_key_first_and_last_four():
     assert out.startswith("AKIA") and "MPLE fp:" in out and "IOSFODNN7EXA" not in out
 
 
-def test_medium_key_last_four_only():
+def test_values_under_20_chars_fully_masked():
     out = display("abcdEFGHijklMN")          # 14 chars
-    assert out.startswith("********klMN") and "abcd" not in out
+    assert out.startswith("******** fp:") and "abcd" not in out and "klMN" not in out
+    assert display("x" * 19).startswith("******** fp:")
+    assert display("AKIAIOSFODNN7EXAMPLE").startswith("AKIA************MPLE fp:")  # 20: first and last 4
+
+
+def test_length_never_revealed():
+    short, long_ = display("abcdefghijklmnopqrstu"), display("abcdefghijklmnopqrstu" * 4)
+    assert len(short) == len(long_)  # same star count whatever the length
+    assert len(display("pw1", name="password")) == len(display("p" * 30, name="password"))
 
 
 def test_short_value_nothing_visible():
@@ -20,7 +28,7 @@ def test_short_value_nothing_visible():
 
 def test_password_never_shows_characters():
     out = display("Bank@1234###", name="DB_PASSWORD")
-    assert "Bank" not in out and "###" not in out and "(12 chars)" in out
+    assert "Bank" not in out and "###" not in out and "chars" not in out
     out = display("a-very-long-password-value-123", rule_id="generic-password")
     assert "a-ve" not in out and "-123" not in out
 
@@ -48,7 +56,7 @@ def test_gitleaks_password_rule_and_assignment_names():
     [f] = parse_gitleaks(data)
     assert "wJal" in f["snippet"] and "MPLEKEY" not in f["snippet"] and "fp:" in f["snippet"]
     out = mask_assignments('db_password = "Sup3rS3cret!x"')
-    assert "Sup3" not in out and "(13 chars)" in out
+    assert "Sup3" not in out and "chars" not in out and out.startswith('db_password = "********')
 
 
 def test_already_masked_values_are_not_masked_twice():

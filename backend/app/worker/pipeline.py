@@ -7,6 +7,7 @@ Security rules enforced here:
 - Scanner processes get a minimal environment (no DB password, no API keys, no tokens) and
   are started with an argument list, never a shell string.
 """
+import hashlib
 import json
 import logging
 import os
@@ -14,6 +15,7 @@ import re
 import subprocess
 import tempfile
 import time
+from collections import Counter
 from datetime import datetime, timezone
 
 from urllib.parse import urlsplit
@@ -45,6 +47,7 @@ from ..grouping import annotate_line_secret, group_findings, is_secret_finding
 from ..notifier import notify_scan
 from ..remediation import apply_remediation
 from ..severity_policy import apply_policy
+from ..top_actions import build_top_actions
 from ..security import assert_public_registry, decrypt_token, parse_image_ref, scrub
 from . import dast
 from . import infra
@@ -146,6 +149,57 @@ def run_tool(cmd: list[str], cwd: str, home: str, timeout: float,
         raise TimeoutError(f"{cmd[0]} exceeded the time limit")
 
 
+def _probe(cmd: list[str], home: str) -> str:
+    """Short command output (versions); never fails the scan."""
+    try:
+        proc = subprocess.run(cmd, env=tool_env(home), capture_output=True, text=True, timeout=30,
+                              stdin=subprocess.DEVNULL)
+        return (proc.stdout or proc.stderr or "").strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def tool_versions(checks: dict, home: str) -> dict:
+    """Scanner versions and rule/database versions for the report's metadata block."""
+    tools, rulesets = {}, []
+    if checks.get("secrets"):
+        ver = _probe(["gitleaks", "version"], home).splitlines()[:1]
+        tools["gitleaks"] = ver[0] if ver else "unknown"
+        rulesets.append(f"Gitleaks built-in rules ({tools['gitleaks']}) + 2 VAPT rules (OpenAI and Anthropic "
+                        "key formats) + VAPT Spring config password check")
+    if checks.get("deps") or checks.get("iac") or checks.get("image"):
+        try:
+            info = json.loads(_probe(["trivy", "version", "--format", "json"], home) or "{}")
+        except ValueError:
+            info = {}
+        tools["trivy"] = info.get("Version") or "unknown"
+        db = info.get("VulnerabilityDB") or {}
+        if db:
+            tools["trivy_db_updated"] = db.get("UpdatedAt")
+            tools["trivy_db_downloaded"] = db.get("DownloadedAt")
+            rulesets.append(f"Trivy vulnerability DB v{db.get('Version')}, updated {(db.get('UpdatedAt') or '')[:16]}Z")
+        bundle = info.get("CheckBundle") or {}
+        if bundle and (checks.get("iac") or checks.get("image")):
+            rulesets.append(f"Trivy misconfiguration checks {(bundle.get('Digest') or '')[:19]}, downloaded "
+                            f"{(bundle.get('DownloadedAt') or '')[:16]}Z")
+    if checks.get("code"):
+        from ..config_checks import JAVA_RULES, SPRING_SETTINGS
+        rulesets.append("Semgrep Registry 'auto' ruleset (rules for the detected languages, fetched at scan time)")
+        rulesets.append(f"VAPT built-in: {len(SPRING_SETTINGS)} Spring Boot settings, {len(JAVA_RULES)} Spring "
+                        "Security code rules")
+    from ..severity_policy import OVERRIDES
+    rulesets.append(f"VAPT severity policy: {len(OVERRIDES)} overrides of scanner defaults")
+    return {"tools": tools, "rulesets": rulesets}
+
+
+def file_sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def _load_json(path: str):
     if not os.path.exists(path) or os.path.getsize(path) == 0:
         return None
@@ -181,7 +235,7 @@ def neutralize_suppressions(root: str) -> list[str]:
     return sorted(found)
 
 
-def check_code(src, out_dir, home, budget):
+def check_code(src, out_dir, home, budget, meta: dict | None = None):
     out = os.path.join(out_dir, "semgrep.json")
     # --disable-nosem: '# nosemgrep' comments in the scanned code do not hide findings.
     cmd = ["semgrep", "scan", "--config", "auto", "--json", "--output", out, "--disable-nosem",
@@ -194,6 +248,8 @@ def check_code(src, out_dir, home, budget):
     findings = parse_semgrep(data, src)
     errs = len(data.get("errors") or [])
     detail = f"{len(findings)} issue(s)" + (f", {errs} file(s) could not be parsed" if errs else "")
+    if meta is not None:
+        semgrep_meta(data, src, meta)
     spring, cov = scan_spring(src)
     findings += spring
     if cov["config_files"] or cov["java_files"]:
@@ -202,6 +258,31 @@ def check_code(src, out_dir, home, budget):
     else:
         detail += "; no Spring config or Java files found"
     return findings, detail
+
+
+def semgrep_meta(data: dict, src: str, meta: dict) -> None:
+    """Semgrep version, files scanned / skipped and parse errors (file names only)."""
+    if data.get("version"):
+        meta.setdefault("tools", {})["semgrep"] = str(data["version"])
+    paths = data.get("paths") or {}
+    files = meta.setdefault("files", {})
+    if isinstance(paths.get("scanned"), list):
+        files["code_scanned"] = len(paths["scanned"])
+    if isinstance(paths.get("skipped"), list):
+        files["code_skipped"] = len(paths["skipped"])
+    errors = data.get("errors") or []
+    if errors:
+        where = []
+        for e in errors:
+            p = e.get("path") or next((s.get("file") for s in e.get("spans") or [] if s.get("file")), "")
+            if p:
+                where.append(os.path.relpath(p, src) if os.path.isabs(p) else p)
+        kinds = Counter(str((e.get("type")[0] if isinstance(e.get("type"), list) and e.get("type")
+                             else e.get("type")) or "error") for e in errors)
+        meta.setdefault("warnings", []).append(
+            f"Semgrep reported {len(errors)} error(s) ({', '.join(f'{k}: {n}' for k, n in kinds.most_common(3))})"
+            + (": " + ", ".join(sorted(set(where))[:5]) if where else "")
+            + ". Those files were not fully checked for code flaws.")
 
 
 _POM_FETCH_FAIL = re.compile(r"\[pom\] Failed to fetch.*?statusCode=(\d+)")
@@ -465,6 +546,7 @@ def run_scan(scan_id: int) -> None:
     deadline = time.monotonic() + s.scan_timeout_seconds
     steps = Steps(db, scan)
     notes = list(scan.notes or [])
+    meta: dict = {"files": {}, "warnings": []}
 
     def budget():
         return deadline - time.monotonic()
@@ -545,7 +627,10 @@ def run_scan(scan_id: int) -> None:
             steps.start("fetch", "Extracting archive")
             if not scan.upload_path or not os.path.isfile(scan.upload_path):
                 raise FetchError("Uploaded archive is missing.")
+            meta["archive_sha256"] = file_sha256(scan.upload_path)
+            meta["archive_bytes"] = os.path.getsize(scan.upload_path)
             info = extract_zip(scan.upload_path, src_dir)
+            meta["files"].update(extracted=info["files"], skipped_symlinks=info["skipped_symlinks"])
             os.remove(scan.upload_path)
             scan_root = single_top_dir(src_dir)
             has_git = False
@@ -596,7 +681,7 @@ def run_scan(scan_id: int) -> None:
             notes.extend(port_notes)
             return found, detail
         runners = {
-            "code": lambda: check_code(scan_root, out_dir, home, budget()),
+            "code": lambda: check_code(scan_root, out_dir, home, budget(), meta),
             "deps": lambda: check_deps(scan_root, out_dir, home, budget(), notes),
             "secrets": lambda: check_secrets(scan_root, out_dir, home, budget(), has_git),
             "iac": lambda: check_iac(scan_root, out_dir, home, budget()),
@@ -638,6 +723,15 @@ def run_scan(scan_id: int) -> None:
 
         # 4. report
         steps.start("report")
+        versions = tool_versions(checks, home)
+        meta["tools"] = {**versions["tools"], **meta.get("tools", {})}
+        meta["rulesets"] = versions["rulesets"]
+        for st in scan.steps or []:
+            if st.get("status") == "failed":
+                meta["warnings"].append(f"{st['label']} failed: {st.get('detail') or 'unknown error'}")
+            elif "INCOMPLETE" in (st.get("detail") or ""):
+                meta["warnings"].append(f"{st['label']}: " + st["detail"].split("INCOMPLETE", 1)[1].strip(": ")
+                                        + " (see scan notes)")
         # Credentials found in the code are shown partially + fingerprint; the operator's own scan
         # credentials (login headers, registry login) are never shown at all.
         # Before masking: fingerprint the value on each secret-type line (only the fingerprint is kept),
@@ -660,6 +754,9 @@ def run_scan(scan_id: int) -> None:
         diff = apply_history(final, previous.findings if previous else [])
         diff["previous_scan_id"] = previous.id if previous else None
         scan.diff = diff
+        meta["raw_count"], meta["unique_count"] = raw_count, len(final)
+        meta["top_actions"] = build_top_actions(final)
+        scan.meta = meta
         for f in final:
             db.add(Finding(scan_id=scan.id, **{k: v for k, v in f.items() if not k.startswith("_")}))
         scan.counts = open_counts(final)
@@ -683,6 +780,7 @@ def run_scan(scan_id: int) -> None:
         scan.status = "failed"
         scan.error = msg
         scan.notes = notes
+        scan.meta = meta
         scan.finished_at = datetime.now(timezone.utc)
         db.commit()
     finally:

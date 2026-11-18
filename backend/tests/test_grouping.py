@@ -65,9 +65,13 @@ def test_generic_rule_on_aws_shaped_secret_is_classified_as_aws_secret():
 def test_aws_key_id_with_secret_next_to_it_is_critical():
     out = run([leak("aws-access-token", AKIA, "a.yml", 4, f"access_key_id: {AKIA}"),
                leak("generic-api-key", AWS_SECRET, "a.yml", 5, f"secret_access_key: {AWS_SECRET}")])
-    key_id = next(f for f in out if "access key ID" in f["title"])
-    assert key_id["severity"] == "Critical"
-    assert "secret access key" in key_id["description"]
+    # one credential: the key ID and the secret stored next to it are reported once, as a key pair
+    assert len(out) == 1
+    pair = out[0]
+    assert pair["title"].startswith("Hardcoded AWS access key pair (key ID fp:")
+    assert pair["severity"] == "Critical" and pair["check"] == "secrets"
+    assert [(l["file"], l["line"]) for l in pair["locations"]] == [("a.yml", 4), ("a.yml", 5)]
+    assert "deactivate and delete this access key in AWS IAM" in pair["recommendation"]
 
 
 def test_aws_key_id_paired_only_with_nearest_secret():
@@ -75,9 +79,10 @@ def test_aws_key_id_paired_only_with_nearest_secret():
     out = run([leak("generic-api-key", other, "a.yml", 3, f"S3_SECRET_KEY: {other}"),
                leak("aws-access-token", AKIA, "a.yml", 4, f"SES_ACCESS_KEY: {AKIA}"),
                leak("generic-api-key", AWS_SECRET, "a.yml", 5, f"SES_SECRET_KEY: {AWS_SECRET}")])
-    key_id = next(f for f in out if "access key ID" in f["title"])
-    assert secret_features(AWS_SECRET)["_secret_fp"] in key_id["description"]
-    assert secret_features(other)["_secret_fp"] not in key_id["description"]
+    pair = next(f for f in out if "access key pair" in f["title"])
+    assert secret_features(AWS_SECRET)["_secret_fp"] in pair["title"]
+    assert secret_features(other)["_secret_fp"] not in pair["title"]
+    assert any(secret_features(other)["_secret_fp"] in f["title"] for f in out if f is not pair)
 
 
 def test_aws_key_id_alone_is_medium():

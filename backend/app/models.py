@@ -65,6 +65,9 @@ class Scan(Base):
     # Comparison with the previous completed scan of the same project:
     # {"previous_scan_id", "new", "recurring", "fixed", "fixed_items": [...]}
     diff: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Report metadata: tool / ruleset versions, archive hash, file counts, warnings, raw vs unique
+    # counts and the top actions (see worker.pipeline and top_actions).
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
     # Non-secret scan options, e.g. {"endpoints": [...], "auth_a": true, "auth_b": false}.
     options: Mapped[dict] = mapped_column(JSON, default=dict)
 

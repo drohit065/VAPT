@@ -339,8 +339,22 @@ function ScheduleCard({ project, canEdit, onSaved }) {
   )
 }
 
+function ChangeList({ items }) {
+  return (
+    <ul className="fixed-list">
+      {items.map((it, i) => (
+        <li key={i}>
+          <SevBadge level={it.severity} /> <span>{it.title}</span>
+          <span className="mono muted small"> {it.file_path}{it.line ? `:${it.line}` : ''}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 function DiffCard({ diff }) {
   const [showFixed, setShowFixed] = useState(false)
+  const [showNew, setShowNew] = useState(false)
   if (!diff?.previous_scan_id) {
     return <div className="card small muted">First completed scan of this project: every finding is marked New.</div>
   }
@@ -351,24 +365,83 @@ function DiffCard({ diff }) {
         <span className="diff-num new">{diff.new} new</span>
         <span className="diff-num fixed">{diff.fixed} fixed</span>
         <span className="diff-num">{diff.recurring} still present</span>
+        {diff.new_items?.length > 0 && (
+          <button type="button" className="linkbtn" onClick={() => setShowNew(s => !s)}>
+            {showNew ? 'Hide new' : 'Show new'}
+          </button>
+        )}
         {diff.fixed > 0 && (
           <button type="button" className="linkbtn" onClick={() => setShowFixed(s => !s)}>
             {showFixed ? 'Hide fixed' : 'Show fixed'}
           </button>
         )}
       </div>
-      {showFixed && (
-        <ul className="fixed-list">
-          {diff.fixed_items.map((it, i) => (
+      {showNew && <ChangeList items={diff.new_items} />}
+      {showFixed && <ChangeList items={diff.fixed_items} />}
+      {diff.cve_changes?.length > 0 && (
+        <ul className="fixed-list small">
+          {diff.cve_changes.map((c, i) => (
             <li key={i}>
-              <SevBadge level={it.severity} /> <span>{it.title}</span>
-              <span className="mono muted small"> {it.file_path}{it.line ? `:${it.line}` : ''}</span>
+              <span className="mono">{c.package}</span>:
+              {c.new?.length > 0 && <> new {c.new.join(', ')}</>}
+              {c.new?.length > 0 && c.fixed?.length > 0 && ';'}
+              {c.fixed?.length > 0 && <> fixed {c.fixed.join(', ')}</>}
             </li>
           ))}
         </ul>
       )}
     </div>
   )
+}
+
+function TopActions({ actions }) {
+  if (!actions?.length) return null
+  return (
+    <div className="card">
+      <h2 className="card-title">Top actions</h2>
+      <ol className="top-actions">
+        {actions.map((a, i) => <li key={i}><SevBadge level={a.severity} /> <span>{a.text}</span></li>)}
+      </ol>
+    </div>
+  )
+}
+
+function MetaCard({ meta }) {
+  const [open, setOpen] = useState(false)
+  if (!meta || !Object.keys(meta).length) return null
+  const t = meta.tools || {}
+  const f = meta.files || {}
+  const versions = [['Semgrep', t.semgrep], ['Trivy', t.trivy], ['Gitleaks', t.gitleaks]]
+    .filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(', ')
+  const warnings = meta.warnings || []
+  return (
+    <div className="card">
+      <div className="diff-head">
+        <span>Scan metadata</span>
+        {warnings.length > 0 && <span className="diff-num new">{warnings.length} warning(s)</span>}
+        <button type="button" className="linkbtn" onClick={() => setOpen(o => !o)}>{open ? 'Hide' : 'Show'}</button>
+      </div>
+      {open && (
+        <table className="meta-table small"><tbody>
+          {versions && <tr><th>Scanner versions</th><td>{versions}</td></tr>}
+          {meta.rulesets?.length > 0 && <tr><th>Rules and databases</th><td>{meta.rulesets.map((r, i) => <div key={i}>{r}</div>)}</td></tr>}
+          {t.trivy_db_updated && <tr><th>Trivy DB updated</th><td>{fmtTime(t.trivy_db_updated)}</td></tr>}
+          {(f.extracted != null || f.code_scanned != null) && (
+            <tr><th>Files</th><td>
+              {f.extracted != null && <div>{f.extracted} extracted from the archive{f.skipped_symlinks ? `, ${f.skipped_symlinks} symlink(s) skipped` : ''}</div>}
+              {f.code_scanned != null && <div>{f.code_scanned} analysed by Semgrep{f.code_skipped ? `, ${f.code_skipped} skipped` : ''}</div>}
+            </td></tr>
+          )}
+          {meta.archive_sha256 && <tr><th>Archive SHA-256</th><td className="mono" style={{ wordBreak: 'break-all' }}>{meta.archive_sha256}</td></tr>}
+          <tr><th>Errors and warnings</th><td>{warnings.length ? warnings.map((w, i) => <div key={i}>{w}</div>) : 'None'}</td></tr>
+        </tbody></table>
+      )}
+    </div>
+  )
+}
+
+function naFor(type) {
+  return type === 'zip' ? 'N/A (zip upload)' : type === 'url' ? 'N/A (live URL scan)' : '—'
 }
 
 export default function ScanReport() {
@@ -517,6 +590,12 @@ export default function ScanReport() {
 
       <div className="card">
         <SeverityBar counts={scan.counts || {}} />
+        {scan.meta?.raw_count != null && (
+          <div className="small muted" style={{ marginTop: 6 }}>
+            {scan.meta.raw_count} raw scanner findings → {scan.meta.unique_count} unique issues
+            (duplicates merged and grouped by credential, package and issue).
+          </div>
+        )}
         {triagedCount > 0 && (
           <div className="small muted" style={{ marginTop: 6 }}>
             Counts exclude {triagedCount} triaged finding(s) (false positive, accepted risk or fixed).
@@ -524,6 +603,7 @@ export default function ScanReport() {
         )}
       </div>
 
+      <TopActions actions={scan.meta?.top_actions} />
       <DiffCard diff={scan.diff} />
       {project && <ScheduleCard project={project} canEdit={can(user, 'analyst')} onSaved={setProject} />}
 
@@ -539,10 +619,16 @@ export default function ScanReport() {
         <div>
           <div className="small muted">Branch / commit</div>
           <div>
-            {scan.branch || '—'}
+            {scan.branch || naFor(scan.project.source_type)}
             {scan.commit_sha && <> @ <span className="mono">{scan.commit_sha.slice(0, 12)}</span></>}
           </div>
         </div>
+        {scan.checks?.secrets && ['zip', 'git'].includes(scan.project.source_type) && (
+          <div>
+            <div className="small muted">Git history</div>
+            <div>{scan.project.source_type === 'git' ? 'Scanned' : 'Not scanned (zip upload)'}</div>
+          </div>
+        )}
         {scan.languages?.length > 0 && (
           <div>
             <div className="small muted">Languages</div>
@@ -560,6 +646,7 @@ export default function ScanReport() {
       {scan.notes?.length > 0 && (
         <div className="info">{scan.notes.map((n, i) => <div key={i}>{n}</div>)}</div>
       )}
+      <MetaCard meta={scan.meta} />
 
       <div className="card">
         <div className="report-filters">

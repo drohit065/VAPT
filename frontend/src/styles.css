@@ -220,6 +220,13 @@ input[type=file] { font: inherit; max-width: 100%; }
 }
 .pre-wrap { white-space: pre-wrap; word-break: break-word; }
 .finding-body section > p + p, .finding-body section > .code-wrap + p { margin-top: 8px; }
+.card-title { font-size: 15px; margin: 0 0 8px; }
+.top-actions { margin: 0; padding-left: 22px; }
+.top-actions li { margin: 5px 0; }
+.meta-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+.meta-table th { text-align: left; color: var(--muted); font-weight: 500; width: 170px; vertical-align: top; padding: 4px 8px 4px 0; }
+.meta-table td { padding: 4px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+@media (max-width: 700px) { .meta-table th { width: 110px; } }
 .code-wrap { position: relative; }
 .code-wrap .snippet { margin-top: 8px; }
 .code-copy { position: absolute; top: 14px; right: 8px; opacity: .85; }

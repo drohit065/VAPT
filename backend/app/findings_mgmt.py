@@ -94,10 +94,35 @@ def apply_history(final: list[dict], previous: list) -> dict:
                 f["status_note"] = "Marked fixed in an earlier scan but found again."
     fixed = [p for fp, p in prev_by_fp.items() if fp not in current and get(p, "status") not in STICKY]
     fixed.sort(key=lambda p: SEVERITY_ORDER.get(get(p, "severity"), 9))
+
+    def item(x):
+        return {"severity": get(x, "severity"), "title": get(x, "title"),
+                "file_path": get(x, "file_path"), "line": get(x, "line")}
+
+    # Dependencies are matched per package; within a package that is still vulnerable, compare CVEs.
+    cve_changes = []
+    for f in final:
+        p = prev_by_fp.get(f["fingerprint"])
+        if p is None or f.get("check") != "deps":
+            continue
+        now_ids, before_ids = vuln_ids(f.get("snippet")), vuln_ids(get(p, "snippet"))
+        added, removed = sorted(now_ids - before_ids), sorted(before_ids - now_ids)
+        if added or removed:
+            cve_changes.append({"package": (f.get("rule_id") or "").removeprefix("pkg:") or f.get("title"),
+                                "new": added, "fixed": removed})
     return {
         "new": sum(1 for f in final if f["is_new"]),
         "recurring": sum(1 for f in final if not f["is_new"]),
         "fixed": len(fixed),
-        "fixed_items": [{"severity": get(p, "severity"), "title": get(p, "title"),
-                         "file_path": get(p, "file_path"), "line": get(p, "line")} for p in fixed[:200]],
+        "fixed_items": [item(p) for p in fixed[:200]],
+        "new_items": [item(f) for f in final if f["is_new"]][:200],
+        "cve_changes": cve_changes[:100],
     }
+
+
+_VULN_ID = re.compile(r"^\s*((?:CVE|GHSA|GO|PYSEC|RUSTSEC|OSV|SNYK|NSWG|ALAS\d*|DSA|USN|RHSA)-[\w.:-]+)", re.I)
+
+
+def vuln_ids(snippet: str | None) -> set[str]:
+    """Advisory IDs listed in a grouped dependency finding's snippet (one per line)."""
+    return {m.group(1).upper() for line in (snippet or "").splitlines() if (m := _VULN_ID.match(line))}

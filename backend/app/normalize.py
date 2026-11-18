@@ -250,6 +250,18 @@ def trivy_relationships(res: dict):
     return lookup_rel
 
 
+_REPEATED_PREFIX = re.compile(r"^((?:pkg:)?[\w.\-/@]+:\s+)(?:\1)+", re.I)
+
+
+def clean_vuln_title(title: str) -> str:
+    """'jettison: jettison: parser crash' -> 'jettison: parser crash' (repeated prefixes, any count)."""
+    t = " ".join((title or "").split())
+    prev = None
+    while prev != t:
+        prev, t = t, _REPEATED_PREFIX.sub(r"\1", t)
+    return t
+
+
 def parse_trivy_vulns(data: dict) -> list[dict]:
     out = []
     for res in (data or {}).get("Results", []) or []:
@@ -262,7 +274,8 @@ def parse_trivy_vulns(data: dict) -> list[dict]:
             installed = v.get("InstalledVersion", "")
             fixed = v.get("FixedVersion") or ""
             cwe = _first(v.get("CweIDs"))
-            desc = v.get("Description") or v.get("Title") or ""
+            vtitle = clean_vuln_title(v.get("Title") or "")
+            desc = v.get("Description") or vtitle
             if v.get("PrimaryURL"):
                 desc += f"\n\nAdvisory: {v['PrimaryURL']}"
             if fixed:
@@ -283,7 +296,7 @@ def parse_trivy_vulns(data: dict) -> list[dict]:
                 line = (locs[0] or {}).get("StartLine")
             out.append(make_finding(
                 severity=TRIVY_SEV.get(str(v.get("Severity", "")).upper(), "Low"),
-                title=f"{vid} in {pkg} {installed}" + (f": {v['Title']}" if v.get("Title") else ""),
+                title=f"{vid} in {pkg} {installed}" + (f": {vtitle}" if vtitle else ""),
                 file_path=target,
                 line=line,
                 snippet=f"{pkg}@{installed}" + (f"  ->  fixed in {fixed}" if fixed else "  (no fix available)"),
@@ -298,7 +311,7 @@ def parse_trivy_vulns(data: dict) -> list[dict]:
                 recommendation=rec,
                 cvss_score=src.get("V3Score"),
                 cvss_vector=src.get("V3Vector"),
-            ) | {"_pkg": pkg, "_installed": installed, "_fixed": fixed, "_vtitle": (v.get("Title") or "")[:300],
+            ) | {"_pkg": pkg, "_installed": installed, "_fixed": fixed, "_vtitle": vtitle[:300],
                  "_url": v.get("PrimaryURL") or "", "_cvss_src": (src_name or "").upper().replace("REDHAT", "Red Hat"),
                  "_vdesc": (v.get("Description") or "")[:3000], "_eco": eco}
               | dict(zip(("_rel", "_via"), relationship(v.get("PkgID")))))
@@ -429,6 +442,12 @@ _SECRET_RULE = re.compile(r"(^|[.:])secrets?[.:]|hard-?coded|detected-[\w-]*(key
                           re.I)
 _QUOTED_ANY = re.compile(r"""(["'`])([^"'`\n]{8,})\1""")
 _LONG_TOKEN = re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9+/_\-.]{20,}={0,2}(?![A-Za-z0-9])")
+# The key of a `key: value`, `key = value` or `"key": value` line (YAML, properties, .env, JSON).
+_KEY_PART = re.compile(r"""^(\s*(?:-\s+)?(?:export\s+)?["']?[A-Za-z_][\w.\-]*["']?\s*(?::|=>|=)\s*)(.*)$""")
+# Long names that are code, not secrets: dotted chains of CONSTANT_CASE, snake_case, camelCase,
+# PascalCase or lowercase words (no digits; random tokens almost never fit these shapes).
+_IDENT_PART = r"(?:[A-Z]+(?:_[A-Z]+)+|[a-z]+(?:_[a-z]+)*|[a-z]+(?:[A-Z][a-z]+)+|(?:[A-Z][a-z]+)+)"
+_IDENTIFIER = re.compile(_IDENT_PART + r"(?:\." + _IDENT_PART + r")*(?:\(\))?")
 
 
 def mask_secret_snippet(text: str, rule_id: str = "") -> str:
@@ -444,17 +463,22 @@ def mask_secret_snippet(text: str, rule_id: str = "") -> str:
 
     def tok(m):
         v = m.group(0)
-        return v if is_masked(v) else display(v, rule_id="password" if pw else rule_id)
+        if is_masked(v) or _IDENTIFIER.fullmatch(v):
+            return v
+        return display(v, rule_id="password" if pw else rule_id)
 
     out = []
     for line in text.splitlines():
         prefix, sep, code = line.partition(" | ")
         if not sep:
             prefix, code = "", line
+        # `key: value` / `key = value`: only the value is masked, the key name is always shown
+        m = _KEY_PART.match(code)
+        key, value = (m.group(1), m.group(2)) if m else ("", code)
         # lit()/tok() leave already-masked values alone, so mixed lines are handled too
-        code = _QUOTED_ANY.sub(lit, code)
-        code = _LONG_TOKEN.sub(tok, code)
-        out.append(prefix + sep + code)
+        value = _QUOTED_ANY.sub(lit, value)
+        value = _LONG_TOKEN.sub(tok, value)
+        out.append(prefix + sep + key + value)
     return "\n".join(out)
 
 
@@ -487,14 +511,14 @@ def parse_gitleaks(data: list, root: str | None = None) -> list[dict]:
         where = (f"Found in Git history, commit {commit}"
                  + (f" ({g['Date'][:10]})" if g.get("Date") else "") + "."
                  if commit else "Found in the current files.")
-        match = redact(g.get("Match") or "", secrets)
+        snippet = _gitleaks_snippet(g, path, root, secrets)
         desc = (g.get("Description") or "").strip()
         out.append(make_finding(
             severity=gitleaks_severity(rule),
             title=f"Hardcoded secret: {_rule_label(rule)}",
             file_path=path,
             line=g.get("StartLine"),
-            snippet=f"{g.get('StartLine', '?')} | {match}" if match else "",
+            snippet=snippet,
             description=((desc + "\n\n") if desc else "")
             + f"A value matching the '{rule}' pattern is committed to the repository. {where} "
               "The value is shown partially (or not at all for passwords) with a fingerprint that is the same wherever this credential appears.",
@@ -505,6 +529,20 @@ def parse_gitleaks(data: list, root: str | None = None) -> list[dict]:
             owasp="A07:2021 - Identification and Authentication Failures",
         ) | {"_commit": commit, "_in_history": bool(commit)} | _secret_features_of(g))
     return out
+
+
+def _gitleaks_snippet(g: dict, path: str, root: str | None, secrets) -> str:
+    """The real source line(s), so key names and quotes are shown as written. Gitleaks' Match is
+    only a regex match: it can start mid-word ("IRUS_SCAN_API_KEY" for VIRUS_...), drop the key, or
+    end with the quote it used as a boundary. The Match is used only when the current file no
+    longer holds the secret (a finding from Git history)."""
+    start, end, raw = g.get("StartLine"), g.get("EndLine"), str(g.get("Secret") or "")
+    if root and start and raw:
+        lines = read_snippet(root, path, start, end if end and end - start < 5 else start, context=0)
+        if raw in lines or (len(raw) > 40 and raw[:40] in lines):
+            return redact(lines, secrets)
+    match = redact(g.get("Match") or "", secrets)
+    return f"{start or '?'} | {match}" if match else ""
 
 
 def _secret_features_of(g: dict) -> dict:

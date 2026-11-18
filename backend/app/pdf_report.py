@@ -142,6 +142,107 @@ def _summary_text(counts: dict, total: int, project_name: str) -> str:
     return text
 
 
+def _count_text(meta: dict, counted: int, findings: list[dict]) -> str:
+    raw, unique = meta.get("raw_count") or 0, meta.get("unique_count") or 0
+    info = sum(1 for f in findings if f.get("severity") == "Info")
+    text = (f"Raw scanner findings: {raw}. Unique issues: {unique}, after merging duplicate matches and "
+            "grouping them by credential, package and issue.")
+    extra = []
+    if info:
+        extra.append(f"{info} informational issue(s) are listed but not counted")
+    if unique - info > counted:
+        extra.append(f"{unique - info - counted} triaged as false positive, accepted risk or fixed are not counted")
+    return text + (" " + "; ".join(extra) + "." if extra else "")
+
+
+def _actions_table(actions: list[dict], width: float) -> Table:
+    rows = [[_p(f"{i}.", "cell"), _sev_cell(a["severity"]), _p(a["text"], "cell")]
+            for i, a in enumerate(actions, 1)]
+    t = Table(rows, colWidths=[7 * mm, 20 * mm, width - 27 * mm])
+    t.setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.4, BORDER), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                           ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                           ("LEFTPADDING", (0, 0), (0, -1), 0)]))
+    return t
+
+
+MAX_CHANGE_ITEMS = 20
+
+
+def _change_lines(label: str, items: list[dict]) -> list:
+    out = [_p(f"{label} ({len(items)})", "label")]
+    for it in items[:MAX_CHANGE_ITEMS]:
+        loc = (it.get("file_path") or "") + (f":{it['line']}" if it.get("line") else "")
+        out.append(_p(f"- [{it.get('severity')}] {it.get('title')}" + (f" ({loc})" if loc else ""), "small"))
+    if len(items) > MAX_CHANGE_ITEMS:
+        out.append(_p(f"- ... and {len(items) - MAX_CHANGE_ITEMS} more", "small"))
+    return out
+
+
+def _changes_section(diff: dict, findings: list[dict]) -> list:
+    """New / Fixed / Still open against the previous scan. Matching: secrets by value fingerprint,
+    dependencies by package (and CVE within it), code by rule + file + normalised flagged line."""
+    prev = diff["previous_scan_id"]
+    new = [f for f in findings if f.get("is_new")]
+    still = [f for f in findings if f.get("is_new") is False]
+    out = [Paragraph(f"Changes since scan #{prev}", S["h2"]),
+           _p(f"{len(new)} new, {diff.get('fixed', 0)} fixed, {len(still)} still open. Secrets are matched by "
+              "the credential's fingerprint, dependencies by package and CVE, code issues by rule, file and "
+              "the flagged line (so moved code still matches).", "small")]
+    if new:
+        out += _change_lines("New", new)
+    if diff.get("fixed_items"):
+        out += _change_lines("Fixed", diff["fixed_items"])
+    if still:
+        out += _change_lines("Still open", still)
+    for c in diff.get("cve_changes") or []:
+        parts = ([f"new {', '.join(c['new'])}"] if c.get("new") else []) + \
+                ([f"fixed {', '.join(c['fixed'])}"] if c.get("fixed") else [])
+        out.append(_p(f"- {c['package']}: " + "; ".join(parts), "small"))
+    return out
+
+
+def _metadata_section(meta: dict, width: float) -> list:
+    tools = meta.get("tools") or {}
+    files = meta.get("files") or {}
+    rows = []
+    names = {"semgrep": "Semgrep", "trivy": "Trivy", "gitleaks": "Gitleaks"}
+    versions = ", ".join(f"{names[k]} {tools[k]}" for k in names if tools.get(k))
+    if versions:
+        rows.append(("Scanner versions", versions))
+    if meta.get("rulesets"):
+        rows.append(("Rules and databases", "\n".join(meta["rulesets"])))
+    if tools.get("trivy_db_updated"):
+        rows.append(("Trivy DB updated", _fmt_time(_iso(tools["trivy_db_updated"]))))
+    counted = []
+    if files.get("extracted") is not None:
+        counted.append(f"{files['extracted']} file(s) extracted from the archive")
+    if files.get("skipped_symlinks"):
+        counted.append(f"{files['skipped_symlinks']} symlink(s) skipped")
+    if files.get("code_scanned") is not None:
+        counted.append(f"{files['code_scanned']} file(s) analysed by Semgrep"
+                       + (f", {files['code_skipped']} skipped (size, type or ignore rules)"
+                          if files.get("code_skipped") else ""))
+    if counted:
+        rows.append(("Files", "\n".join(counted)))
+    if meta.get("archive_sha256"):
+        rows.append(("Archive SHA-256", meta["archive_sha256"]
+                     + (f"\n({meta['archive_bytes']:,} bytes)" if meta.get("archive_bytes") else "")))
+    rows.append(("Errors and warnings", "\n".join(meta.get("warnings") or []) or "None"))
+    t = Table([[_p(k, "cell"), _p(v, "cell")] for k, v in rows], colWidths=[36 * mm, width - 36 * mm])
+    t.setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.4, BORDER), ("TEXTCOLOR", (0, 0), (0, -1), MUTED),
+                           ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                           ("TOPPADDING", (0, 0), (-1, -1), 2.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5)]))
+    return [Paragraph("Scan metadata", S["h2"]), t]
+
+
+def _iso(value: str):
+    """Trivy's UTC timestamps ('2026-11-17T01:05:25.260481643Z') to a datetime; else unchanged."""
+    try:
+        return datetime.fromisoformat(value[:19]).replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return value
+
+
 def _top_table(findings: list[dict], width: float) -> Table:
     rows = [[Paragraph("<b>Severity</b>", S["cell"]), Paragraph("<b>Finding</b>", S["cell"]),
              Paragraph("<b>Location</b>", S["cell"])]]
@@ -247,10 +348,16 @@ def build_pdf(scan: dict, findings: list[dict]) -> bytes:
 
     langs = ", ".join(l["name"] if isinstance(l, dict) else str(l) for l in scan.get("languages") or []) or "-"
     checks = ", ".join(CHECK_LABELS.get(k, k) for k, v in (scan.get("checks") or {}).items() if v) or "-"
-    commit = (scan.get("commit_sha") or "")[:12] or "-"
+    meta = scan.get("meta") or {}
+    stype = project.get("source_type")
+    na = {"zip": "N/A (zip upload)", "url": "N/A (live URL scan)"}.get(stype)
+    branch = scan.get("branch") or na or "-"
+    commit = (scan.get("commit_sha") or "")[:12] or na or "-"
+    history = {"git": "Scanned (full history)", "zip": "Not scanned: a zip upload has no Git history"}.get(stype)
     info = [
         ("Project", project["name"]), ("Source", project.get("source")),
-        ("Branch", scan.get("branch") or "-"), ("Commit", commit),
+        ("Tag" if stype == "image" else "Branch", branch), ("Digest" if stype == "image" else "Commit", commit),
+        *([("Git history", history)] if history and (scan.get("checks") or {}).get("secrets") else []),
         ("Scan started", _fmt_time(scan.get("started_at") or scan.get("created_at"))),
         ("Scan finished", _fmt_time(scan.get("finished_at"))),
         ("Languages", langs), ("Frameworks", ", ".join(scan.get("frameworks") or []) or "-"),
@@ -264,7 +371,10 @@ def build_pdf(scan: dict, findings: list[dict]) -> bytes:
         ("TOPPADDING", (0, 0), (-1, -1), 2.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
     ]))
     story += [t, Paragraph("Executive summary", S["h1"]),
-              Paragraph(_summary_text(counts, total, escape(project["name"])), S["body"]), Spacer(1, 4 * mm)]
+              Paragraph(_summary_text(counts, total, escape(project["name"])), S["body"])]
+    if meta.get("raw_count") is not None:
+        story.append(_p(_count_text(meta, total, findings), "body"))
+    story.append(Spacer(1, 4 * mm))
 
     bar = severity_bar(counts, width)
     if bar:
@@ -274,13 +384,15 @@ def build_pdf(scan: dict, findings: list[dict]) -> bytes:
                                 ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
     story += [legend]
 
+    actions = meta.get("top_actions") or []
+    if actions:
+        story += [Paragraph("Top actions", S["h2"]),
+                  _p("The steps that resolve the most important findings, in order of priority.", "small")]
+        story.append(_actions_table(actions, width))
+
     diff = scan.get("diff") or {}
     if diff.get("previous_scan_id"):
-        story += [Paragraph("Changes since the previous scan", S["h2"]),
-                  _p(f"Compared with scan #{diff['previous_scan_id']}: {diff.get('new', 0)} new finding(s), "
-                     f"{diff.get('recurring', 0)} still present, {diff.get('fixed', 0)} no longer found.")]
-        for it in (diff.get("fixed_items") or [])[:15]:
-            story.append(_p(f"- Fixed: [{it['severity']}] {it['title']} ({it['file_path']})", "small"))
+        story += _changes_section(diff, findings)
     if suppressed:
         story += [_p(f"{len(suppressed)} finding(s) marked as false positive or accepted risk are left out of "
                      "this report's counts and details.", "small")]
@@ -288,6 +400,8 @@ def build_pdf(scan: dict, findings: list[dict]) -> bytes:
         story += [Paragraph("AI review summary", S["h2"]), _p(scan["ai_summary"])]
     if scan.get("notes"):
         story += [Paragraph("Scan notes", S["h2"])] + [_p(f"- {n}", "small") for n in scan["notes"]]
+    if meta:
+        story += _metadata_section(meta, width)
 
     if findings:
         story += [Paragraph("Findings overview", S["h1"]), _top_table(findings, width),

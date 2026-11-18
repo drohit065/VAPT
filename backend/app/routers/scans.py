@@ -271,6 +271,16 @@ async def create_scan(
     raise HTTPException(400, "source_type must be 'git', 'zip', 'url' or 'image'")
 
 
+def _report_meta(scan: Scan) -> dict:
+    """Stored report metadata, with top actions whose findings were all triaged away since dropped."""
+    from ..top_actions import current_actions
+    meta = dict(scan.meta or {})
+    if meta.get("top_actions"):
+        meta["top_actions"] = current_actions(meta["top_actions"],
+                                              {f.fingerprint: f.status for f in scan.findings if f.fingerprint})
+    return meta
+
+
 def _scan_detail(scan: Scan) -> dict:
     data = scan_brief(scan)
     data.update(
@@ -284,6 +294,7 @@ def _scan_detail(scan: Scan) -> dict:
         error=scan.error,
         ai_summary=scan.ai_summary,
         diff=scan.diff or {},
+        meta=_report_meta(scan),
         options=scan.options or {},
         statuses=STATUSES,
         suppressed={k: sum(1 for f in scan.findings if f.status == k)

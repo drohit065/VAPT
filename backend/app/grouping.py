@@ -171,12 +171,13 @@ def group_secrets(findings: list[dict], root: str | None) -> list[dict]:
         return min((secret_kind(x) for x in items), key=lambda k: KINDS[k][0])
 
     # Where AWS secret access keys are, to rate access key IDs.
-    aws_secret_at: dict[str, list[tuple[int, str]]] = {}
+    aws_secret_at: dict[str, list[tuple[int, str, str]]] = {}
     for key, items in groups.items():
         if group_kind(key, items) == "aws_secret":
             for x in items:
                 if x.get("line"):
-                    aws_secret_at.setdefault(x["file_path"], []).append((x["line"], x["_secret_fp"]))
+                    aws_secret_at.setdefault(x["file_path"], []).append(
+                        (x["line"], x["_secret_fp"], _aws_stem(_key_name(x))))
 
     out = []
     for key, items in groups.items():
@@ -192,6 +193,7 @@ def group_secrets(findings: list[dict], root: str | None) -> list[dict]:
         fp = rep["_secret_fp"]
         severity = min((x["severity"] for x in items), key=lambda s: SEVERITY_ORDER[s])
         notes = []
+        pair_secret = None
 
         if kind == "gcp_sa":
             info = sa_info[key[3:]]
@@ -213,11 +215,18 @@ def group_secrets(findings: list[dict], root: str | None) -> list[dict]:
                 severity = "Critical"
             elif kind == "aws_key_id":
                 pairs = []
-                for loc in locs:  # the nearest secret within 3 lines (a tie goes to the line below)
-                    near = [(abs(l - loc[1]), l < loc[1], l, s) for (l, s) in aws_secret_at.get(loc[0], [])
-                            if loc[1] and abs(l - loc[1]) <= 3]
+                stem_at = {_loc(x): _aws_stem(_key_name(x)) for x in items}
+                for loc in locs:
+                    # A secret within 3 lines: the one whose key name matches (AWS_S3_ACCESS_KEY ->
+                    # AWS_S3_SECRET_KEY) first, then the nearest (a tie goes to the line below).
+                    near = [(stem != stem_at.get(loc), abs(l - loc[1]), l < loc[1], l, s)
+                            for (l, s, stem) in aws_secret_at.get(loc[0], []) if loc[1] and abs(l - loc[1]) <= 3]
                     if near:
-                        pairs.append(min(near)[2:])
+                        pairs.append(min(near)[3:])
+                # Every location that has a secret next to it has the same one (and most do): one
+                # credential, an access key pair.
+                if pairs and len({s for _, s in pairs}) == 1 and 2 * len(pairs) >= len(locs):
+                    pair_secret = pairs[0][1]
                 if pairs:
                     severity = "Critical"
                     notes.append("A secret access key (" + ", ".join(sorted({s for _, s in pairs}))
@@ -250,17 +259,76 @@ def group_secrets(findings: list[dict], root: str | None) -> list[dict]:
         g = dict(rep)
         g.update(
             title=title, severity=severity, scanners=scanners, description=desc, recommendation=fix,
+            check="secrets",
             exploitation=("Anyone who can read this code - developers, CI systems, anyone it is shared with - "
                           "can use the credential directly against the service it belongs to."),
             locations=[{"file": l[0], "line": l[1]} for l in locs] if n > 1 else None,
             _in_history=in_history,
             _fp_key=f"secret|{fp if kind != 'gcp_sa' else key}",
+            _secret_kind=kind, _locs=locs, _config_keys=config_keys, _all_rules=rules, _pair_secret=pair_secret,
         )
-        if severity != rep["severity"]:
-            g["cvss_score"], g["cvss_source"], g["cvss_vector"] = (
-                {"Critical": 9.1, "High": 7.5, "Medium": 5.3, "Low": 3.1}[severity], "estimated", None)
+        _set_severity(g, rep["severity"])
         out.append(g)
-    return rest + out
+    return rest + merge_aws_pairs(out)
+
+
+_AWS_NAME_WORDS = {"aws", "access", "secret", "key", "keys", "id", "accesskey", "secretkey", "accesskeyid",
+                   "secretaccesskey", "awsaccesskeyid", "awssecretaccesskey"}
+
+
+def _key_name(f: dict) -> str:
+    return f.get("_secret_config_key") or f.get("_secret_name") or ""
+
+
+def _aws_stem(name: str) -> str:
+    """'AWS_S3_SECRET_KEY' and 'AWS_S3_ACCESS_KEY' -> 's3'; 'aws.ses.secret-access-key' -> 'ses'."""
+    return "".join(t for t in re.split(r"[^a-z0-9]+", (name or "").lower()) if t and t not in _AWS_NAME_WORDS)
+
+
+def _set_severity(g: dict, scanner_severity: str) -> None:
+    if g["severity"] != scanner_severity:
+        g["cvss_score"], g["cvss_source"], g["cvss_vector"] = (
+            {"Critical": 9.1, "High": 7.5, "Medium": 5.3, "Low": 3.1}[g["severity"]], "estimated", None)
+
+
+def merge_aws_pairs(groups: list[dict]) -> list[dict]:
+    """An AWS access key ID that is always stored next to the same secret access key is one
+    credential (an access key pair): report it once, under the secret's identity."""
+    by_fp = {g["_secret_fp"]: g for g in groups if g.get("_secret_kind") == "aws_secret"}
+    out, merged = [], set()
+    for g in groups:
+        sec = by_fp.get(g.get("_pair_secret") or "")
+        if g.get("_secret_kind") != "aws_key_id" or not sec or id(sec) in merged:
+            out.append(g)
+            continue
+        merged.add(id(sec))
+        kid, sfp = g["_secret_fp"], sec["_secret_fp"]
+        locs = sorted(set(g["_locs"]) | set(sec["_locs"]), key=lambda l: (l[0], l[1] or 0))
+        first = g["_locs"][0]
+        locs.remove(first)
+        locs.insert(0, first)
+        n = len(locs)
+        in_history = g["_in_history"] or sec["_in_history"]
+        rules = sorted(set(g["_all_rules"]) | set(sec["_all_rules"]))
+        sec.update(
+            title=f"Hardcoded AWS access key pair (key ID {kid}, secret {sfp})",
+            severity="Critical", file_path=first[0], line=first[1],
+            snippet=g.get("snippet") if g.get("snippet") and g.get("line") == first[1] else sec.get("snippet"),
+            scanners=sorted(set(g["scanners"]) | set(sec["scanners"])),
+            description="\n\n".join(p for p in [
+                f"An AWS access key ID ({kid}) and its secret access key ({sfp}) are committed together. With "
+                "both, anyone can call AWS as the IAM user or role they belong to, with all of its permissions.",
+                f"Found in {n} locations" + (" (including Git history)." if in_history else "."),
+                "The values are never shown in full: values of 20+ characters show only their first and last 4 "
+                f"characters, and the fingerprints {kid} and {sfp} are the same wherever this key pair appears.",
+                ("Matched rules: " + ", ".join(rules)) if len(rules) > 1 else "",
+            ] if p),
+            recommendation=secret_fix("aws_secret", locs, in_history, g["_config_keys"] + sec["_config_keys"]),
+            locations=[{"file": l[0], "line": l[1]} for l in locs],
+            _in_history=in_history, _locs=locs, _all_rules=rules,
+        )
+        _set_severity(sec, "Critical")
+    return out
 
 
 # ---------------------------------------------------------------- dependency grouping
@@ -325,6 +393,18 @@ _BOUND_INCL = re.compile(r"\b(?:through|up to(?: and including)?)\s+(?:versions?
                          r"|\b(" + _VLIST + r")\s+(?:and|or)\s+(?:earlier|prior|below|older|lower)\b", re.I)
 
 
+# Lower bounds of the affected range: "From 2.18.0 until 2.18.9", "starting with 2.18.0",
+# "introduced in 2.18.0", "since 2.18.0", ">= 2.18.0". Wording about fixes ("fixed in X and later")
+# is never read as a lower bound.
+_LOWER = re.compile(r"\b(?:from\s+(?:versions?\s+|v)?(" + _VER + r")\s+(?:until|to|through|up to|before|prior to)"
+                    r"|(?:starting (?:with|in|from|at)|introduced in|since|beginning (?:with|in))\s+(?:versions?\s+|v)?("
+                    + _VER + r"))|>=\s*v?(" + _VER + r")", re.I)
+
+
+def lower_bounds(text: str) -> list[str]:
+    return [next(g for g in m.groups() if g) for m in _LOWER.finditer(text or "")]
+
+
 def _bounds(text: str) -> list[tuple[str, bool]]:
     """(version, inclusive) upper bounds of the affected range stated in advisory text."""
     out = []
@@ -342,6 +422,14 @@ def advisory_check(installed: str, fixed: list[str], text: str) -> str | None:
         return (f"advisory data is inconsistent: it lists {', '.join(fixed)} as fixed and {installed} is "
                 "already at or above that on its version line. Verify manually.")
     single = len(_nums(installed)) < 2
+
+    def same_line(v):
+        return (len(_nums(v)) < 2) == single and (single or _nums(v)[:1] == _nums(installed)[:1])
+
+    lows = [v for v in lower_bounds(text) if same_line(v)]
+    if lows and all(vkey(installed) < vkey(v) for v in lows):
+        return (f"the advisory text says affected versions start at {min(lows, key=vkey)}; {installed} is older "
+                "and may not be affected. Verify against the vendor advisory.")
     mine = [(v, inc) for v, inc in _bounds(text)
             if (len(_nums(v)) < 2) == single and (single or _nums(v)[:1] == _nums(installed)[:1])]
     if mine and all(vkey(installed) > vkey(v) if inc else vkey(installed) >= vkey(v) for v, inc in mine):
@@ -464,6 +552,8 @@ def group_deps(findings: list[dict]) -> list[dict]:
             rule_id=f"pkg:{pkg}",
             scanners=sorted({s for x in items for s in x.get("scanners") or []}),
             _fp_key=f"deps|{path}|{pkg}",
+            _fix_version=fix, _cve_count=n, _fixes_all=bool(fix) and not unfixed,
+            _moved_to=(moved[0], moved[1]) if moved else None,
         )
         out.append(g)
     return rest + out
