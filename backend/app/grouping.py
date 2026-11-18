@@ -180,12 +180,13 @@ def group_secrets(findings: list[dict], root: str | None) -> list[dict]:
                         (x["line"], x["_secret_fp"], _aws_stem(_key_name(x))))
 
     # Where passwords are (key name contains "pass"), to recognise AWS SES SMTP user name + password.
-    password_at: dict[str, list[tuple[int, str]]] = {}
+    password_at: dict[str, list[tuple[int, str, str]]] = {}
     for key, items in groups.items():
         if group_kind(key, items) in ("password", "generic"):
             for x in items:
                 if x.get("line") and "pass" in _key_name(x).lower():
-                    password_at.setdefault(x["file_path"], []).append((x["line"], x["_secret_fp"]))
+                    password_at.setdefault(x["file_path"], []).append(
+                        (x["line"], x["_secret_fp"], _login_stem(_key_name(x))))
 
     out = []
     for key, items in groups.items():
@@ -236,8 +237,10 @@ def group_secrets(findings: list[dict], root: str | None) -> list[dict]:
                 # credential, an access key pair.
                 if pairs and len({s for _, s in pairs}) == 1 and 2 * len(pairs) >= len(locs):
                     pair_secret = pairs[0][1]
-                smtp = [] if pairs else [s for loc in locs if loc[1] and _USER_KEY.search(stem_name_at.get(loc, ""))
-                                          for (l, s) in password_at.get(loc[0], []) if 0 < abs(l - loc[1]) <= 2]
+                smtp = [] if pairs else sorted({s for loc in locs if loc[1]
+                                                and _USER_KEY.search(stem_name_at.get(loc, ""))
+                                                for s in [_smtp_password(loc, stem_name_at.get(loc, ""),
+                                                                         password_at.get(loc[0], []))] if s})
                 if pairs:
                     severity = "Critical"
                     notes.append("A secret access key (" + ", ".join(sorted({s for _, s in pairs}))
@@ -292,6 +295,22 @@ def group_secrets(findings: list[dict], root: str | None) -> list[dict]:
 
 
 _USER_KEY = re.compile(r"user(name)?$|smtp.?user|mail.?user", re.I)
+
+
+def _login_stem(name: str) -> str:
+    """'SPRING_MAIL_USERNAME' and 'spring.mail.password' -> 'springmail'."""
+    return re.sub(r"(user(name)?|pass(word|wd)?|pwd)$", "", re.sub(r"[^a-z0-9]", "", (name or "").lower()))
+
+
+def _smtp_password(loc: tuple, user_key: str, passwords: list[tuple[int, str, str]]) -> str | None:
+    """The password stored next to a user name: the one whose key matches the user name's key
+    (SPRING_MAIL_USERNAME -> SPRING_MAIL_PASSWORD), else the nearest one within 2 lines."""
+    near = [(abs(l - loc[1]), s, stem) for (l, s, stem) in passwords if 0 < abs(l - loc[1]) <= 2]
+    if not near:
+        return None
+    stem = _login_stem(user_key)
+    same = [n for n in near if stem and n[2] == stem]
+    return min(same or near)[1]
 
 _AWS_NAME_WORDS = {"aws", "access", "secret", "key", "keys", "id", "accesskey", "secretkey", "accesskeyid",
                    "secretaccesskey", "awsaccesskeyid", "awssecretaccesskey"}
@@ -574,6 +593,7 @@ def group_deps(findings: list[dict]) -> list[dict]:
             scanners=sorted({s for x in items for s in x.get("scanners") or []}),
             _fp_key=f"deps|{path}|{pkg}",
             _fix_version=fix, _cve_count=n, _fixes_all=bool(fix) and not unfixed,
+            _major_upgrade=bool(fix) and not same_major,
             _moved_to=(moved[0], moved[1]) if moved else None,
         )
         out.append(g)

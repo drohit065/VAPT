@@ -113,9 +113,38 @@ def _dep_action(f: dict) -> tuple:
         text = f"Upgrade {_short_pkg(pkg)} to {fix} (fixes {cves if f.get('_fixes_all') else 'some of ' + cves})"
     else:
         text = f"Mitigate or replace {_short_pkg(pkg)}: no fixed version is published ({cves})"
+    if f.get("_major_upgrade"):
+        text += " (major version upgrade: check for breaking changes)"
     if "(verify: may not be affected)" in (f.get("title") or ""):
         text += " after verifying the advisories apply"
     return (f["severity"], 1, -n, text, [f])
+
+
+BOOT = "org.springframework.boot:"
+
+
+def _boot_managed(f: dict) -> bool:
+    """A vulnerable library whose version comes from Spring Boot (a Boot artifact, or pulled in
+    through a Boot starter, whose dependency management sets the version)."""
+    pkg = (f.get("rule_id") or "").removeprefix("pkg:")
+    return pkg.startswith(BOOT) or any(v.startswith(BOOT) for v in f.get("_via") or [])
+
+
+def _boot_action(fs: list[dict]) -> tuple:
+    """One 'upgrade Spring Boot' step instead of a separate step per library it manages."""
+    version = next((f.get("_installed") for f in fs if (f.get("rule_id") or "").startswith("pkg:" + BOOT)
+                    and f.get("_installed")), None)
+    fs = sorted(fs, key=lambda f: (SEVERITY_ORDER[f["severity"]], -(f.get("_cve_count") or 0)))
+    cves = sum(f.get("_cve_count") or 0 for f in fs)
+    names = [_short_pkg((f.get("rule_id") or "").removeprefix("pkg:")) for f in fs]
+    shown = ", ".join(names[:3]) + (f" and {len(names) - 3} more" if len(names) > 3 else "")
+    line = f"{version.split('.')[0]}.x " if version and version[:1].isdigit() else ""
+    text = (f"Upgrade Spring Boot{' from ' + version if version else ''} to its latest {line}release: it sets "
+            f"the versions of {len(fs)} vulnerable libraries ({shown}; {cves} CVEs). Re-scan afterwards and pin "
+            "any library that is still flagged")
+    if any(f.get("_major_upgrade") for f in fs):
+        text += "; some fixes exist only in a newer major version"
+    return (fs[0]["severity"], 1, -cves, text, fs)
 
 
 def _code_actions(fs: list[dict]) -> list[tuple]:
@@ -141,7 +170,12 @@ def build_top_actions(findings: list[dict], limit: int = MAX_ACTIONS) -> list[di
     """[{"severity", "text", "fingerprints"}] for open findings, most important first."""
     open_fs = [f for f in findings if f.get("status", "open") not in SUPPRESSED and f.get("severity") != "Info"]
     candidates = _secret_actions([f for f in open_fs if f.get("check") == "secrets"])
-    candidates += [_dep_action(f) for f in open_fs if f.get("check") == "deps" and f.get("_cve_count")]
+    deps = [f for f in open_fs if f.get("check") == "deps" and f.get("_cve_count")]
+    boot = [f for f in deps if _boot_managed(f)]
+    if len(boot) >= 2:
+        candidates.append(_boot_action(boot))
+        deps = [f for f in deps if f not in boot]
+    candidates += [_dep_action(f) for f in deps]
     candidates += _code_actions([f for f in open_fs if f.get("check") not in ("secrets", "deps")
                                  or (f.get("check") == "deps" and not f.get("_cve_count"))])
     candidates.sort(key=lambda c: (SEVERITY_ORDER[c[0]], c[1], c[2]))

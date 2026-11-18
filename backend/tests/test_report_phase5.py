@@ -233,3 +233,23 @@ def test_advisory_lower_bound_marks_older_version_for_verification():
     assert advisory_check("2.18.3", ["2.21.5", "2.18.9", "2.22.1"], desc) is None  # inside the range
     assert lower_bounds("Versions 1.2.0 and later fix this; fixed since nothing") == []  # fix wording ignored
     assert lower_bounds("introduced in 4.1.0") == ["4.1.0"] and lower_bounds(">= 5.0.0, < 5.3.2") == ["5.0.0"]
+
+
+def test_spring_boot_managed_libraries_become_one_action():
+    boot = 'org.springframework.boot:spring-boot-starter-web'
+    fs = [_dep('org.springframework.boot:spring-boot', 'High', 1, '3.3.11', 'b0', _installed='3.2.2'),
+          _dep('org.apache.tomcat.embed:tomcat-embed-core', 'Critical', 39, '10.1.58', 'b1', _via=[boot]),
+          _dep('org.springframework:spring-webmvc', 'Critical', 4, '7.0.9', 'b2', _via=[boot], _major_upgrade=True),
+          _dep('com.squareup.okhttp3:okhttp', 'High', 1, '4.9.2', 'd1', _via=[])]
+    texts = [a['text'] for a in build_top_actions(fs)]
+    boot_action = next(t for t in texts if t.startswith('Upgrade Spring Boot'))
+    assert boot_action.startswith('Upgrade Spring Boot from 3.2.2 to its latest 3.x release')
+    assert '3 vulnerable libraries' in boot_action and '44 CVEs' in boot_action
+    assert 'newer major version' in boot_action
+    assert not any('tomcat-embed-core to' in t for t in texts)
+    assert 'Upgrade okhttp to 4.9.2 (fixes 1 CVE)' in texts
+
+
+def test_major_upgrade_flagged_in_action():
+    [a] = build_top_actions([_dep('com.squareup.okio:okio', 'High', 1, '3.4.0', 'o1', _major_upgrade=True)])
+    assert 'major version upgrade' in a['text']

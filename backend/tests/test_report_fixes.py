@@ -101,3 +101,27 @@ def test_gcp_service_account_file_wording(tmp_path):
     [g] = group_findings(fs, str(tmp_path))
     assert g["locations"] is None and "The whole file is the credential" in g["description"]
     assert "Remove the file from the code (google-key.json) and add it to .gitignore." in g["recommendation"]
+
+
+def test_url_path_with_capitals_not_masked_but_tokens_are():
+    out = mask_secret_snippet('26 |   api-url: ${CONV_URL:https://conv-agent-api.example.com:8000/conversationalAgentService}',
+                              'vapt-config-password')
+    assert '8000/conversationalAgentService' in out
+    tok = mask_secret_snippet('3 | key: Ab3dE5gH7jK9/mN1pQ3sT5vX7zA9c', 'generic-api-key')
+    assert 'Ab3dE5gH' not in tok
+
+
+def test_ses_smtp_pairs_with_matching_password_only():
+    key_id = 'AKIAQ1WE2RT3YU4IO5PA'
+    db_pw, mail_pw = 'DbFakePassword0123456789abcdefgh', 'BFakeSmtpPassword0123456789abcdefghijKLMN'
+
+    def leak(rule, v, name, line):
+        return {'check': 'secrets', 'severity': 'Medium', 'title': 'x', 'file_path': 'a.yml', 'line': line,
+                'snippet': f'{line} | {name}: v', 'description': '', 'rule_id': rule, 'scanners': ['gitleaks'],
+                **secret_features(v, name), '_secret_config_key': name if 'PASSWORD' in name else None}
+    out = group_findings([leak('vapt-config-password', db_pw, 'SPRING_DATASOURCE_PASSWORD', 19),
+                          leak('vapt-config-password', mail_pw, 'SPRING_MAIL_PASSWORD', 20),
+                          leak('aws-access-token', key_id, 'SPRING_MAIL_USERNAME', 21)])
+    smtp = next(f for f in out if 'SES SMTP' in f['title'])
+    assert secret_features(mail_pw)['_secret_fp'] in smtp['description']
+    assert secret_features(db_pw)['_secret_fp'] not in smtp['description']

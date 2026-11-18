@@ -450,7 +450,9 @@ _IDENT_PART = r"(?:[A-Z]+(?:_[A-Z]+)+|[a-z]+(?:_[a-z]+)*|[a-z]+(?:[A-Z][a-z]+)+|
 _IDENTIFIER = re.compile(_IDENT_PART + r"(?:\." + _IDENT_PART + r")*(?:\(\))?")
 # Hostnames and URL paths in lowercase ('//db.prod.rds.amazonaws.com', '3306/caprod'): not secrets.
 # Random tokens almost always contain uppercase letters; a lowercase value needs '.' or '/' to match.
-_HOST_OR_PATH = re.compile(r"(?=[^./]*[./])/*[a-z0-9-]+(?:[./:][a-z0-9_-]+)*/?")
+_HOST_OR_PATH = re.compile(r"(?=[^./]*[./])/*[a-z0-9-]+(?:[./:][a-z0-9_-]+)*/?"
+                           # a port and/or URL path of plain words: '8000/conversationalAgentService'
+                           r"|/*(?:\d+|[A-Za-z][A-Za-z_-]*)(?:/(?:\d+|[A-Za-z][A-Za-z_-]*))+/?")
 
 
 def mask_secret_snippet(text: str, rule_id: str = "") -> str:
