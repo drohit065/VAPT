@@ -29,6 +29,9 @@ _SECRET_LABEL = {
     "jwt": ("JSON Web Token", "JSON Web Tokens"),
     "password_hash": ("password hash", "password hashes"),
     "password": ("password", "passwords"),
+    "signing_key": ("JWT signing secret", "JWT signing secrets"),
+    "api_key": ("API key", "API keys"),
+    "token": ("access token", "access tokens"),
     "generic": ("other secret", "other secrets"),
 }
 
@@ -73,7 +76,8 @@ def _secret_kind(f: dict) -> str:
         return "aws_pair"
     if (f.get("title") or "").startswith("Hardcoded AWS SES SMTP"):
         return "aws_smtp"
-    return f.get("_secret_kind") or "generic"
+    kind = f.get("_secret_kind") or "generic"
+    return "generic" if kind == "config_secret" else kind
 
 
 def _secret_actions(fs: list[dict]) -> list[tuple]:
@@ -136,7 +140,7 @@ def _boot_action(fs: list[dict]) -> tuple:
                     and f.get("_installed")), None)
     fs = sorted(fs, key=lambda f: (SEVERITY_ORDER[f["severity"]], -(f.get("_cve_count") or 0)))
     cves = sum(f.get("_cve_count") or 0 for f in fs)
-    names = [_short_pkg((f.get("rule_id") or "").removeprefix("pkg:")) for f in fs]
+    names = list(dict.fromkeys(_short_pkg((f.get("rule_id") or "").removeprefix("pkg:")) for f in fs))
     shown = ", ".join(names[:3]) + (f" and {len(names) - 3} more" if len(names) > 3 else "")
     line = f"{version.split('.')[0]}.x " if version and version[:1].isdigit() else ""
     text = (f"Upgrade Spring Boot{' from ' + version if version else ''} to its latest {line}release: it sets "

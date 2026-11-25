@@ -31,6 +31,7 @@ from .secret_display import fingerprint as value_fingerprint
 
 _AWS_SECRET_SHAPE = re.compile(r"[A-Za-z0-9/+]{40}")
 _PLACEHOLDER = re.compile(r"^\$\{[^}]*\}$|^%\([^)]*\)s$|^<[^>]+>$|^\{\{[^}]*\}\}$")
+_HASH_VALUE = re.compile(r"\$2[abxy]?\$\d{2}\$[./A-Za-z0-9]{53}|\$argon2(?:id|i|d)\$[^\s'\"`]+")
 _ASSIGNED = re.compile(r"""([A-Za-z_][\w.\-]*)["']?\s*(?:=|:|=>)\s*["']?([^"'\s#,;]{6,})""")
 
 
@@ -66,6 +67,11 @@ def annotate_line_secret(f: dict, known_values: list[str]) -> None:
         if v and v in code:
             f.update(secret_features(v, name_before(code, v)))
             return
+    if re.search(r"bcrypt|argon2|password.?hash", f.get("rule_id") or "", re.I):
+        h = _HASH_VALUE.search(code)
+        if h:
+            f.update(secret_features(h.group(0), name_before(code, h.group(0))))
+            return
     matches = [m for m in _ASSIGNED.finditer(code) if not _PLACEHOLDER.match(m.group(2))]
     if matches:
         m = matches[-1]
@@ -94,6 +100,10 @@ KINDS = {
     "jwt": (2, "JSON Web Token"),
     "password_hash": (3, "Password hash"),
     "password": (3.5, "Password"),
+    "signing_key": (3.5, "JWT signing secret"),
+    "api_key": (3.5, "API key"),
+    "token": (3.5, "access token"),
+    "config_secret": (3.5, "Hardcoded secret"),
     "generic": (4, "Hardcoded secret"),
 }
 _RULE_KIND = [
@@ -105,14 +115,18 @@ _RULE_KIND = [
 ]
 
 
+_AWS_SECRET_NAME = re.compile(r"secret[^a-z0-9]?(access[^a-z0-9]?)?key|aws[^a-z0-9]?secret", re.I)
+
+
 def secret_kind(f: dict) -> str:
     rid = (f.get("rule_id") or "").lower()
-    for needle, kind in _RULE_KIND:
-        if needle in rid:
-            return kind
-    if f.get("_secret_aws40") and "secret" in (f.get("_secret_name") or "").lower():
+    kind = next((k for needle, k in _RULE_KIND if needle in rid), "generic")
+    # A 40-character AWS-shaped value under a secret-key name (secret-access-key, secretKey) is an AWS
+    # secret access key, even when only a generic password/secret rule reported it.
+    if kind in ("password", "generic") and f.get("_secret_aws40") and (
+            _AWS_SECRET_NAME.search(_key_name(f)) or "secret" in (f.get("_secret_name") or "").lower()):
         return "aws_secret"
-    return "generic"
+    return kind
 
 
 def _service_account(root: str | None, rel: str) -> dict | None:
@@ -147,6 +161,55 @@ def _first_para(text: str) -> str:
     return (text or "").split("\n\n", 1)[0].strip()
 
 
+_CFG_FILE = re.compile(r"\.(ya?ml|properties)$", re.I)
+
+
+def _config_keys_of(root: str | None, rel: str, cache: dict) -> dict[int, str]:
+    """line -> dotted config key for a YAML / properties file (empty for other files)."""
+    if rel in cache:
+        return cache[rel]
+    cache[rel] = {}
+    if root and _CFG_FILE.search(rel):
+        path = os.path.realpath(os.path.join(root, rel))
+        if path.startswith(os.path.realpath(root) + os.sep) and os.path.isfile(path) \
+                and os.path.getsize(path) < 2_000_000:
+            from .config_checks import config_entries
+            try:
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    cache[rel] = {no: key for no, key, _ in config_entries(rel, fh.read())}
+            except (OSError, ValueError):
+                pass
+    return cache[rel]
+
+
+_PLAIN_IN_COMMENT = re.compile(r"(?:--|#|//|/\*)[^\n]*\b(?:bcrypt|hash(?:ed)?|password|passwd|pwd|plain(?:text)?)"
+                               r"\b[^\n]*fp:[0-9a-f]{8}", re.I)
+
+
+def _flagged_line(f: dict) -> str:
+    for raw in (f.get("snippet") or "").splitlines():
+        num, sep, rest = raw.partition(" | ")
+        if sep and num.strip() == str(f.get("line")):
+            return rest
+    return ""
+
+
+def config_kind(name: str) -> str:
+    """A finer label for a literal under a secret-named config key that is not a password."""
+    last = re.sub(r"[-_]", "", (name or "").rsplit(".", 1)[-1].lower())
+    if re.search(r"pass|pwd", last):
+        return "password"
+    if re.search(r"jwt|sign", last):
+        return "signing_key"
+    if "token" in last:
+        return "token"
+    if "apikey" in last:
+        return "api_key"
+    if re.search(r"secret|key|credential", last):
+        return "config_secret"
+    return "password"
+
+
 def group_secrets(findings: list[dict], root: str | None) -> list[dict]:
     secret = [f for f in findings if is_secret_finding(f) and f.get("_secret_fp")]
     if not secret:
@@ -170,6 +233,12 @@ def group_secrets(findings: list[dict], root: str | None) -> list[dict]:
             return "gcp_sa"
         return min((secret_kind(x) for x in items), key=lambda k: KINDS[k][0])
 
+    cfg_cache: dict = {}
+
+    def full_key(x: dict) -> str:
+        """Dotted config key of the finding's line when known (spring.mail.username), else its name."""
+        return _config_keys_of(root, x.get("file_path") or "", cfg_cache).get(x.get("line")) or _key_name(x)
+
     # Where AWS secret access keys are, to rate access key IDs.
     aws_secret_at: dict[str, list[tuple[int, str, str]]] = {}
     for key, items in groups.items():
@@ -184,13 +253,17 @@ def group_secrets(findings: list[dict], root: str | None) -> list[dict]:
     for key, items in groups.items():
         if group_kind(key, items) in ("password", "generic"):
             for x in items:
-                if x.get("line") and "pass" in _key_name(x).lower():
+                if x.get("line") and "pass" in full_key(x).lower():
                     password_at.setdefault(x["file_path"], []).append(
-                        (x["line"], x["_secret_fp"], _login_stem(_key_name(x))))
+                        (x["line"], x["_secret_fp"], _login_stem(full_key(x))))
 
     out = []
     for key, items in groups.items():
         kind = group_kind(key, items)
+        if kind == "password":
+            names = [x["_secret_config_key"] for x in items if x.get("_secret_config_key")]
+            if names:
+                kind = config_kind(names[0])
         rep = min(items, key=lambda x: (KINDS[secret_kind(x)][0], SEVERITY_ORDER[x["severity"]], _loc(x)))
         locs = sorted({_loc(x) for x in items}, key=lambda l: (l[0], l[1] or 0))
         first = _loc(rep)
@@ -225,7 +298,7 @@ def group_secrets(findings: list[dict], root: str | None) -> list[dict]:
             elif kind == "aws_key_id":
                 pairs = []
                 stem_at = {_loc(x): _aws_stem(_key_name(x)) for x in items}
-                stem_name_at = {_loc(x): _key_name(x) for x in items}
+                stem_name_at = {_loc(x): full_key(x) for x in items}
                 for loc in locs:
                     # A secret within 3 lines: the one whose key name matches (AWS_S3_ACCESS_KEY ->
                     # AWS_S3_SECRET_KEY) first, then the nearest (a tie goes to the line below).
@@ -258,6 +331,13 @@ def group_secrets(findings: list[dict], root: str | None) -> list[dict]:
                     notes.append("No secret access key was found next to this key ID. An access key ID alone does "
                                  "not grant access, but it identifies the AWS account and user and is usually "
                                  "paired with a secret stored elsewhere.")
+            if kind == "password_hash" and any(_PLAIN_IN_COMMENT.search(_flagged_line(x)) for x in items):
+                notes.append("A comment next to the hash appears to contain the plaintext password (masked in "
+                              "this report). That is worse than the hash itself: anyone who reads the code has "
+                              "the password, without cracking anything. Change it wherever it is used.")
+            if kind == "signing_key":
+                notes.append("This is the key that signs login tokens: anyone who has it can create a valid token "
+                             "for any user, including administrators, without a password.")
             what = _first_para(rep.get("description")) or f"A {label.lower()} is committed to the repository."
             fix = None
         n = len(locs)
@@ -305,12 +385,14 @@ def _login_stem(name: str) -> str:
 def _smtp_password(loc: tuple, user_key: str, passwords: list[tuple[int, str, str]]) -> str | None:
     """The password stored next to a user name: the one whose key matches the user name's key
     (SPRING_MAIL_USERNAME -> SPRING_MAIL_PASSWORD), else the nearest one within 2 lines."""
-    near = [(abs(l - loc[1]), s, stem) for (l, s, stem) in passwords if 0 < abs(l - loc[1]) <= 2]
-    if not near:
-        return None
     stem = _login_stem(user_key)
-    same = [n for n in near if stem and n[2] == stem]
-    return min(same or near)[1]
+    cands = [(abs(l - loc[1]), s, st) for (l, s, st) in passwords if 0 < abs(l - loc[1]) <= 60]
+    # same config section (spring.mail.username -> spring.mail.password), even if other keys sit between
+    same = [c for c in cands if stem and c[2] == stem]
+    if same:
+        return min(same)[1]
+    near = [c for c in cands if c[0] <= 2]
+    return min(near)[1] if near else None
 
 _AWS_NAME_WORDS = {"aws", "access", "secret", "key", "keys", "id", "accesskey", "secretkey", "accesskeyid",
                    "secretaccesskey", "awsaccesskeyid", "awssecretaccesskey"}
@@ -503,11 +585,24 @@ def group_deps(findings: list[dict]) -> list[dict]:
     rest = [f for f in findings if not (f.get("check") == "deps" and f.get("_pkg"))]
     groups: dict[tuple, list[dict]] = {}
     for f in deps:
-        groups.setdefault((f["file_path"], f["_pkg"], f["_installed"]), []).append(f)
+        groups.setdefault((f["_pkg"], f["_installed"]), []).append(f)
     out = []
-    for (path, pkg, installed), items in groups.items():
-        items.sort(key=lambda x: (SEVERITY_ORDER[x["severity"]], -(x.get("cvss_score") or 0), x.get("rule_id") or ""))
-        rep = items[0]
+    for (pkg, installed), all_items in groups.items():
+        # the same package version declared in several manifests (root + module pom.xml files): one issue
+        paths = sorted({x["file_path"] for x in all_items}, key=lambda p: (p.count("/"), p))
+        path = paths[0]
+        rel = "direct" if any(x.get("_rel") == "direct" for x in all_items) else \
+            ("indirect" if any(x.get("_rel") == "indirect" for x in all_items) else None)
+        via_all = sorted({v for x in all_items for v in x.get("_via") or []})
+        all_items.sort(key=lambda x: (SEVERITY_ORDER[x["severity"]], -(x.get("cvss_score") or 0),
+                                      x.get("rule_id") or "", x["file_path"] != path))
+        seen, items = set(), []
+        for x in all_items:
+            if x.get("rule_id") not in seen:
+                seen.add(x.get("rule_id"))
+                items.append(x)
+        rep = dict(items[0], file_path=path, _rel=rel, _via=via_all)
+        where = path if len(paths) == 1 else f"{path} and {len(paths) - 1} other manifest(s) ({', '.join(paths[1:])})"
         n = len(items)
         fix, same_major = minimum_fix(installed, [split_fixed(x.get("_fixed")) for x in items])
         unfixed = [x["rule_id"] for x in items if not split_fixed(x.get("_fixed"))]
@@ -522,7 +617,7 @@ def group_deps(findings: list[dict]) -> list[dict]:
         title = f"{pkg} {installed}: {n} known vulnerabilit{'y' if n == 1 else 'ies'}"
         if all(verify.values()):
             title += " (verify: may not be affected)"
-        desc_lines = [f"{pkg} {installed}, declared in {path}, is affected by {n} publicly known "
+        desc_lines = [f"{pkg} {installed}, declared in {where}, is affected by {n} publicly known "
                       f"vulnerabilit{'y' if n == 1 else 'ies'}:"]
         for x in items:
             rating = x["severity"]
@@ -594,6 +689,7 @@ def group_deps(findings: list[dict]) -> list[dict]:
             _fp_key=f"deps|{path}|{pkg}",
             _fix_version=fix, _cve_count=n, _fixes_all=bool(fix) and not unfixed,
             _major_upgrade=bool(fix) and not same_major,
+            locations=[{"file": p, "line": None} for p in paths] if len(paths) > 1 else rep.get("locations"),
             _moved_to=(moved[0], moved[1]) if moved else None,
         )
         out.append(g)

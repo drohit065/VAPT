@@ -446,6 +446,13 @@ ROTATE_STEP = {
     "stripe": "roll the key in the Stripe Dashboard (Developers > API keys)",
     "jwt": "revoke the token, or rotate the signing key that issued it if it is long-lived",
     "password_hash": "change the password this hash belongs to: a committed hash can be cracked offline",
+    "signing_key": "generate a new random signing secret (at least 256 bits) and deploy it. Every token signed "
+                   "with the old one stops working, so users have to log in again; until it is replaced, anyone "
+                   "with the old value can forge a valid token for any user",
+    "api_key": "revoke this API key with the service it belongs to, check its usage for unexpected calls, and "
+               "create a new one",
+    "token": "revoke this token with the service that issued it, check its usage, and create a new one",
+    "config_secret": "revoke this secret with the service it belongs to and issue a new one",
     "password": "change this password on the system it belongs to (database user, mail account, keystore or "
                 "login) and update every deployment that uses it",
     "generic": "revoke this credential with its provider and issue a new one",

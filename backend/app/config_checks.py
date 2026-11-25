@@ -318,6 +318,49 @@ def _strip_comments(text: str) -> str:
     return re.sub(r"//[^\n]*", "", text)
 
 
+_IV_SPEC = re.compile(r"new\s+(?:IvParameterSpec|GCMParameterSpec)\s*\(")
+STATIC_IV = ("Medium", "IV for encryption is not random", "CWE-329",
+             "The initialization vector (IV) passed to an encrypting cipher does not come from a secure random "
+             "generator: it is fixed, empty or derived from a password or key.",
+             "With a repeated or predictable IV, the same plaintext always encrypts to the same ciphertext, so an "
+             "attacker can see when values repeat and, in CBC mode, learn about or tamper with the first block. "
+             "With AES-GCM, reusing an IV with the same key breaks both confidentiality and integrity.",
+             "Generate a new IV for every encryption with `SecureRandom.nextBytes(iv)` (12 bytes for AES-GCM, 16 "
+             "for CBC) and store it next to the ciphertext; it does not need to be secret. Do not derive it from "
+             "the key or passphrase (for example OpenSSL's EVP_BytesToKey) and never use a constant.")
+
+
+def _call_args(code: str, start: int) -> str:
+    """Text between the '(' at code[start-1] and its matching ')'."""
+    depth, i = 1, start
+    while i < len(code) and depth:
+        depth += {"(": 1, ")": -1}.get(code[i], 0)
+        i += 1
+    return code[start:i - 1]
+
+
+def static_iv_lines(code: str) -> list[int]:
+    """Lines where an IV spec is built for ENCRYPT_MODE from something that is not SecureRandom output."""
+    lines = code.splitlines()
+    out = []
+    for m in _IV_SPEC.finditer(code):
+        args = [a.strip() for a in _call_args(code, m.end()).split(",")]
+        iv = args[-1] if "GCMParameterSpec" not in m.group(0) else (args[1] if len(args) > 1 else args[-1])
+        iv = iv.split("(", 1)[0].strip() if iv.endswith(")") and "(" in iv and not iv.startswith("new") else iv
+        no = _line_of(code, m.start())
+        window = "\n".join(lines[max(0, no - 11):no + 10])
+        if "ENCRYPT_MODE" not in window or "DECRYPT_MODE" in lines[no - 1]:
+            continue
+        if re.match(r"^[\w.]+$", iv) and re.search(r"\.nextBytes\(\s*" + re.escape(iv) + r"\s*\)", code):
+            continue
+        if re.match(r"^[\w.]+$", iv) and re.search(r"(SecureRandom|generateIv|randomIv|newIv)", code) \
+                and re.search(r"\b" + re.escape(iv.rsplit(".", 1)[-1]) + r"\s*=\s*[\w.]*(?:random|generate)\w*\(",
+                              code, re.I):
+            continue
+        out.append(no)
+    return out
+
+
 def scan_spring(root: str) -> tuple[list[dict], dict]:
     """Findings (one per rule, every location listed) and coverage counts."""
     hits: dict[str, list[tuple[str, int, str]]] = {}  # rule id -> [(file, line, note)]
@@ -344,6 +387,9 @@ def scan_spring(root: str) -> tuple[list[dict], dict]:
                     note = "credentials"
                 hits.setdefault(rid, []).append((rel, _line_of(code, m.start()), note))
                 meta[rid] = tuple(rest)
+        for no in static_iv_lines(code):
+            hits.setdefault("static-iv", []).append((rel, no, ""))
+            meta["static-iv"] = STATIC_IV
     findings = []
     for rid, locs in hits.items():
         severity, title, cwe, what, exploit, fix = meta[rid]

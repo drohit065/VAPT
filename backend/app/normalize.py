@@ -450,6 +450,7 @@ _IDENT_PART = r"(?:[A-Z]+(?:_[A-Z]+)+|[a-z]+(?:_[a-z]+)*|[a-z]+(?:[A-Z][a-z]+)+|
 _IDENTIFIER = re.compile(_IDENT_PART + r"(?:\." + _IDENT_PART + r")*(?:\(\))?")
 # Hostnames and URL paths in lowercase ('//db.prod.rds.amazonaws.com', '3306/caprod'): not secrets.
 # Random tokens almost always contain uppercase letters; a lowercase value needs '.' or '/' to match.
+_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
 _HOST_OR_PATH = re.compile(r"(?=[^./]*[./])/*[a-z0-9-]+(?:[./:][a-z0-9_-]+)*/?"
                            # a port and/or URL path of plain words: '8000/conversationalAgentService'
                            r"|/*(?:\d+|[A-Za-z][A-Za-z_-]*)(?:/(?:\d+|[A-Za-z][A-Za-z_-]*))+/?")
@@ -469,7 +470,9 @@ def mask_secret_snippet(text: str, rule_id: str = "") -> str:
 
     def lit(m):
         v = m.group(2)
-        return m.group(0) if is_masked(v) else m.group(1) + shown(v) + m.group(1)
+        if is_masked(v) or (not pw and _EMAIL.fullmatch(v)):
+            return m.group(0)
+        return m.group(1) + shown(v) + m.group(1)
 
     def tok(m):
         v = m.group(0)
